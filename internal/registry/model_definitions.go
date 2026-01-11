@@ -1006,6 +1006,104 @@ func GetGitHubCopilotModels() []*ModelInfo {
 // GetKiroModels returns the Kiro (AWS CodeWhisperer) model definitions
 func GetKiroModels() []*ModelInfo {
 	return []*ModelInfo{
+		// --- Claude Native Model Names (for compatibility with Claude Code / Claude CLI) ---
+		// These allow users to use standard Claude model names which route to Kiro
+		{
+			ID:                  "claude-opus-4-5-20251101",
+			Object:              "model",
+			Created:             1761955200, // 2025-11-01
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Opus 4.5 (via Kiro)",
+			Description:         "Claude Opus 4.5 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-sonnet-4-5-20250929",
+			Object:              "model",
+			Created:             1759104000, // 2025-09-29
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Sonnet 4.5 (via Kiro)",
+			Description:         "Claude Sonnet 4.5 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-sonnet-4-20250514",
+			Object:              "model",
+			Created:             1715644800, // 2025-05-14
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Sonnet 4 (via Kiro)",
+			Description:         "Claude Sonnet 4 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-haiku-4-5-20251001",
+			Object:              "model",
+			Created:             1759276800, // 2025-10-01
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Haiku 4.5 (via Kiro)",
+			Description:         "Claude Haiku 4.5 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-opus-4-1-20250805",
+			Object:              "model",
+			Created:             1722945600, // 2025-08-05
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Opus 4.1 (via Kiro)",
+			Description:         "Claude Opus 4.1 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-opus-4-20250514",
+			Object:              "model",
+			Created:             1715644800, // 2025-05-14
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude Opus 4 (via Kiro)",
+			Description:         "Claude Opus 4 using standard model name, routed to Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-3-7-sonnet-20250219",
+			Object:              "model",
+			Created:             1708300800, // 2025-02-19
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude 3.7 Sonnet (via Kiro)",
+			Description:         "Claude 3.7 Sonnet using standard model name, routed to Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 8192,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "claude-3-5-haiku-20241022",
+			Object:              "model",
+			Created:             1729555200, // 2024-10-22
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Claude 3.5 Haiku (via Kiro)",
+			Description:         "Claude 3.5 Haiku using standard model name, routed to Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 8192,
+			// Thinking: not supported for Haiku models
+		},
 		// --- Base Models ---
 		{
 			ID:                  "kiro-claude-opus-4-5",

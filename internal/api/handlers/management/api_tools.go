@@ -702,3 +702,55 @@ func buildProxyTransport(proxyStr string) *http.Transport {
 	log.Debugf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	return nil
 }
+
+// GetModels returns the available models by calling the local /v1/models endpoint
+// using the first configured API key.
+func (h *Handler) GetModels(c *gin.Context) {
+	apiKeys := h.cfg.APIKeys
+	if len(apiKeys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no API keys configured"})
+		return
+	}
+
+	firstKey := apiKeys[0]
+
+	port := h.cfg.Port
+	if port == 0 {
+		port = 8080
+	}
+	modelsURL := fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), "GET", modelsURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create request"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+firstKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to fetch models: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read response"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		return
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.Data(resp.StatusCode, "application/json", body)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}

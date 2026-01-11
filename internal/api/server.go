@@ -641,6 +641,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
+		mgmt.POST("/import-kiro-token", s.mgmt.ImportKiroToken)
+		mgmt.POST("/import-kiro-accounts", s.mgmt.ImportKiroAccounts)
+		mgmt.GET("/kiro-usage", s.mgmt.GetKiroUsage)
+		mgmt.GET("/models", s.mgmt.GetModels)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}

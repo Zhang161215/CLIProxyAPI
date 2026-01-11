@@ -2445,7 +2445,6 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	case "google", "github":
 		RegisterOAuthSession(state, "kiro")
 
-		// Social auth uses protocol handler - for WEB UI we use a callback forwarder
 		provider := "Google"
 		if method == "github" {
 			provider = "Github"
@@ -2481,7 +2480,21 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 				return
 			}
 
-			// Build login URL
+			// For WebUI, start the protocol handler to receive kiro:// callbacks
+			var protocolHandler *kiroauth.ProtocolHandler
+			if isWebUI {
+				protocolHandler = kiroauth.NewProtocolHandler()
+				handlerPort, errHandler := protocolHandler.Start(ctx)
+				if errHandler != nil {
+					log.WithError(errHandler).Error("failed to start kiro protocol handler")
+					SetOAuthSessionError(state, "Failed to start protocol handler")
+					return
+				}
+				log.Infof("Kiro protocol handler started on port %d", handlerPort)
+				defer protocolHandler.Stop()
+			}
+
+			// Always use kiro:// redirect URI (required by Kiro OAuth service)
 			authURL := fmt.Sprintf("%s/login?idp=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256&state=%s&prompt=select_account",
 				"https://prod.us-east-1.auth.desktop.kiro.dev",
 				provider,
@@ -2490,70 +2503,93 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 				state,
 			)
 
-			// Store auth URL for frontend.
-			// Using "|" as separator because URLs contain ":".
 			SetOAuthSessionError(state, "auth_url|"+authURL)
 
-			// Wait for callback file
-			waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-kiro-%s.oauth", state))
-			deadline := time.Now().Add(5 * time.Minute)
+			var code string
+			if isWebUI {
+				callbackCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
 
-			for {
-				if time.Now().After(deadline) {
-					log.Error("oauth flow timed out")
-					SetOAuthSessionError(state, "OAuth flow timed out")
-					return
+				resultChan := make(chan *kiroauth.AuthCallback, 1)
+				tokenChan := make(chan *kiroauth.KiroTokenData, 1)
+
+				if protocolHandler != nil {
+					go func() {
+						result, err := protocolHandler.WaitForCallback(callbackCtx)
+						if err == nil && result != nil {
+							resultChan <- result
+						}
+					}()
 				}
-				if data, errRead := os.ReadFile(waitFile); errRead == nil {
-					var m map[string]string
-					_ = json.Unmarshal(data, &m)
-					_ = os.Remove(waitFile)
-					if errStr := m["error"]; errStr != "" {
-						log.Errorf("Authentication failed: %s", errStr)
+
+				go func() {
+					homeDir, _ := os.UserHomeDir()
+					tokenFile := filepath.Join(homeDir, ".aws", "sso", "cache", "kiro-auth-token.json")
+
+					// Check if token file was recently updated (within last 30 seconds)
+					// This handles the case where Kiro app already processed the callback
+					if info, err := os.Stat(tokenFile); err == nil {
+						if time.Since(info.ModTime()) < 30*time.Second {
+							tokenData, errLoad := kiroauth.LoadKiroIDEToken()
+							if errLoad == nil && tokenData != nil {
+								log.Infof("Found recently updated Kiro token file (modified %v ago)", time.Since(info.ModTime()))
+								tokenChan <- tokenData
+								return
+							}
+						}
+					}
+
+					var lastMod time.Time
+					if info, err := os.Stat(tokenFile); err == nil {
+						lastMod = info.ModTime()
+					}
+
+					ticker := time.NewTicker(500 * time.Millisecond)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-callbackCtx.Done():
+							return
+						case <-ticker.C:
+							info, err := os.Stat(tokenFile)
+							if err != nil {
+								continue
+							}
+							if info.ModTime().After(lastMod) {
+								tokenData, errLoad := kiroauth.LoadKiroIDEToken()
+								if errLoad == nil && tokenData != nil {
+									tokenChan <- tokenData
+									return
+								}
+							}
+						}
+					}
+				}()
+
+				select {
+				case result := <-resultChan:
+					if result.Error != "" {
+						log.Errorf("Authentication failed: %s", result.Error)
 						SetOAuthSessionError(state, "Authentication failed")
 						return
 					}
-					if m["state"] != state {
-						log.Errorf("State mismatch")
-						SetOAuthSessionError(state, "State mismatch")
-						return
-					}
-					code := m["code"]
-					if code == "" {
-						log.Error("No authorization code received")
-						SetOAuthSessionError(state, "No authorization code received")
-						return
-					}
+					code = result.Code
+				case tokenData := <-tokenChan:
+					log.Infof("Kiro IDE token detected, importing directly (provider: %s)", tokenData.Provider)
 
-					// Exchange code for tokens
-					tokenReq := &kiroauth.CreateTokenRequest{
-						Code:         code,
-						CodeVerifier: codeVerifier,
-						RedirectURI:  kiroauth.KiroRedirectURI,
-					}
-
-					tokenResp, errToken := socialClient.CreateToken(ctx, tokenReq)
-					if errToken != nil {
-						log.Errorf("Failed to exchange code for tokens: %v", errToken)
-						SetOAuthSessionError(state, "Failed to exchange code for tokens")
-						return
-					}
-
-					// Save the token
-					expiresIn := tokenResp.ExpiresIn
-					if expiresIn <= 0 {
-						expiresIn = 3600
-					}
-					expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-					email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
-
+					email := kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
 					idPart := kiroauth.SanitizeEmailForFilename(email)
 					if idPart == "" {
 						idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
 					}
 
 					now := time.Now()
-					fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
+					fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(tokenData.Provider), idPart)
+					expiresAtStr := tokenData.ExpiresAt
+					if expiresAtStr == "" {
+						expiresAtStr = now.Add(1 * time.Hour).Format(time.RFC3339)
+					}
 
 					record := &coreauth.Auth{
 						ID:       fileName,
@@ -2561,12 +2597,12 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 						FileName: fileName,
 						Metadata: map[string]any{
 							"type":          "kiro",
-							"access_token":  tokenResp.AccessToken,
-							"refresh_token": tokenResp.RefreshToken,
-							"profile_arn":   tokenResp.ProfileArn,
-							"expires_at":    expiresAt.Format(time.RFC3339),
-							"auth_method":   "social",
-							"provider":      provider,
+							"access_token":  tokenData.AccessToken,
+							"refresh_token": tokenData.RefreshToken,
+							"profile_arn":   tokenData.ProfileArn,
+							"expires_at":    expiresAtStr,
+							"auth_method":   tokenData.AuthMethod,
+							"provider":      tokenData.Provider,
 							"email":         email,
 							"last_refresh":  now.Format(time.RFC3339),
 						},
@@ -2574,20 +2610,114 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 
 					savedPath, errSave := h.saveTokenRecord(ctx, record)
 					if errSave != nil {
-						log.Errorf("Failed to save authentication tokens: %v", errSave)
-						SetOAuthSessionError(state, "Failed to save authentication tokens")
+						log.Errorf("Failed to save Kiro token: %v", errSave)
+						SetOAuthSessionError(state, "Failed to save token")
 						return
 					}
 
-					fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-					if email != "" {
-						fmt.Printf("Authenticated as: %s\n", email)
-					}
+					fmt.Printf("Kiro token imported from IDE! Saved to %s\n", savedPath)
 					CompleteOAuthSession(state)
 					return
+				case <-callbackCtx.Done():
+					log.Error("OAuth flow timed out")
+					SetOAuthSessionError(state, "OAuth flow timed out")
+					return
 				}
-				time.Sleep(500 * time.Millisecond)
+			} else {
+				waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-kiro-%s.oauth", state))
+				deadline := time.Now().Add(5 * time.Minute)
+
+				for {
+					if time.Now().After(deadline) {
+						log.Error("oauth flow timed out")
+						SetOAuthSessionError(state, "OAuth flow timed out")
+						return
+					}
+					if data, errRead := os.ReadFile(waitFile); errRead == nil {
+						var m map[string]string
+						_ = json.Unmarshal(data, &m)
+						_ = os.Remove(waitFile)
+						if errStr := m["error"]; errStr != "" {
+							log.Errorf("Authentication failed: %s", errStr)
+							SetOAuthSessionError(state, "Authentication failed")
+							return
+						}
+						if m["state"] != state {
+							log.Errorf("State mismatch")
+							SetOAuthSessionError(state, "State mismatch")
+							return
+						}
+						code = m["code"]
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
 			}
+
+			if code == "" {
+				log.Error("No authorization code received")
+				SetOAuthSessionError(state, "No authorization code received")
+				return
+			}
+
+			// Exchange code for tokens
+			tokenReq := &kiroauth.CreateTokenRequest{
+				Code:         code,
+				CodeVerifier: codeVerifier,
+				RedirectURI:  kiroauth.KiroRedirectURI,
+			}
+
+			tokenResp, errToken := socialClient.CreateToken(ctx, tokenReq)
+			if errToken != nil {
+				log.Errorf("Failed to exchange code for tokens: %v", errToken)
+				SetOAuthSessionError(state, "Failed to exchange code for tokens")
+				return
+			}
+
+			expiresIn := tokenResp.ExpiresIn
+			if expiresIn <= 0 {
+				expiresIn = 3600
+			}
+			expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+			email := kiroauth.ExtractEmailFromJWT(tokenResp.AccessToken)
+
+			idPart := kiroauth.SanitizeEmailForFilename(email)
+			if idPart == "" {
+				idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+			}
+
+			now := time.Now()
+			fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
+
+			record := &coreauth.Auth{
+				ID:       fileName,
+				Provider: "kiro",
+				FileName: fileName,
+				Metadata: map[string]any{
+					"type":          "kiro",
+					"access_token":  tokenResp.AccessToken,
+					"refresh_token": tokenResp.RefreshToken,
+					"profile_arn":   tokenResp.ProfileArn,
+					"expires_at":    expiresAt.Format(time.RFC3339),
+					"auth_method":   "social",
+					"provider":      provider,
+					"email":         email,
+					"last_refresh":  now.Format(time.RFC3339),
+				},
+			}
+
+			savedPath, errSave := h.saveTokenRecord(ctx, record)
+			if errSave != nil {
+				log.Errorf("Failed to save authentication tokens: %v", errSave)
+				SetOAuthSessionError(state, "Failed to save authentication tokens")
+				return
+			}
+
+			fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+			if email != "" {
+				fmt.Printf("Authenticated as: %s\n", email)
+			}
+			CompleteOAuthSession(state)
 		}()
 
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "method": "social"})
@@ -2609,4 +2739,584 @@ func generateKiroPKCE() (verifier, challenge string, err error) {
 	challenge = base64.RawURLEncoding.EncodeToString(h[:])
 
 	return verifier, challenge, nil
+}
+
+func (h *Handler) ImportKiroToken(c *gin.Context) {
+	ctx := context.Background()
+
+	tokenData, err := kiroauth.LoadKiroIDEToken()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to load Kiro token: %v", err)})
+		return
+	}
+
+	if tokenData.AccessToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Token file exists but access token is empty"})
+		return
+	}
+
+	email := kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
+	idPart := kiroauth.SanitizeEmailForFilename(email)
+	if idPart == "" {
+		idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+	}
+
+	now := time.Now()
+	fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(tokenData.Provider), idPart)
+	expiresAtStr := tokenData.ExpiresAt
+	if expiresAtStr == "" {
+		expiresAtStr = now.Add(1 * time.Hour).Format(time.RFC3339)
+	}
+
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "kiro",
+		FileName: fileName,
+		Metadata: map[string]any{
+			"type":          "kiro",
+			"access_token":  tokenData.AccessToken,
+			"refresh_token": tokenData.RefreshToken,
+			"profile_arn":   tokenData.ProfileArn,
+			"expires_at":    expiresAtStr,
+			"auth_method":   tokenData.AuthMethod,
+			"provider":      tokenData.Provider,
+			"email":         email,
+			"last_refresh":  now.Format(time.RFC3339),
+		},
+	}
+
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save token: %v", errSave)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"provider":   tokenData.Provider,
+		"email":      email,
+		"saved_path": savedPath,
+	})
+}
+
+func (h *Handler) GetKiroUsage(c *gin.Context) {
+	ctx := context.Background()
+	fileName := c.Query("name")
+	if fileName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing 'name' parameter"})
+		return
+	}
+
+	if !strings.HasSuffix(fileName, ".json") {
+		fileName = fileName + ".json"
+	}
+
+	filePath := filepath.Join(h.cfg.AuthDir, fileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	var content map[string]interface{}
+	if err := json.Unmarshal(data, &content); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse auth file"})
+		return
+	}
+
+	accessToken, _ := content["access_token"].(string)
+	if accessToken == "" {
+		accessToken, _ = content["accessToken"].(string)
+	}
+
+	if accessToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing access_token"})
+		return
+	}
+
+	// Check if token is expired and refresh if needed
+	needsRefresh := false
+	if expiresAt, ok := content["expires_at"].(string); ok && expiresAt != "" {
+		if expTime, parseErr := time.Parse(time.RFC3339, expiresAt); parseErr == nil {
+			// Refresh if token expires within 5 minutes
+			if time.Until(expTime) < 5*time.Minute {
+				needsRefresh = true
+			}
+		}
+	} else if expiresAt, ok := content["expiresAt"].(string); ok && expiresAt != "" {
+		if expTime, parseErr := time.Parse(time.RFC3339, expiresAt); parseErr == nil {
+			if time.Until(expTime) < 5*time.Minute {
+				needsRefresh = true
+			}
+		}
+	} else {
+		// No expires_at field, check JWT exp claim
+		needsRefresh = isJWTExpired(accessToken)
+	}
+
+	if needsRefresh {
+		refreshedToken, refreshErr := h.refreshKiroToken(ctx, content, filePath)
+		if refreshErr != nil {
+			log.Warnf("kiro usage: token refresh failed: %v, trying with existing token", refreshErr)
+		} else {
+			accessToken = refreshedToken
+		}
+	}
+
+	cwClient := kiroauth.NewCodeWhispererClient(h.cfg, "")
+	usage, err := cwClient.GetUsageLimits(ctx, accessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get usage: %v", err)})
+		return
+	}
+
+	var subscriptionTitle string
+	var currentUsage, usageLimit float64
+	var nextReset string
+
+	if usage.SubscriptionInfo != nil {
+		subscriptionTitle = usage.SubscriptionInfo.SubscriptionTitle
+	}
+	if len(usage.UsageBreakdownList) > 0 {
+		breakdown := usage.UsageBreakdownList[0]
+
+		if breakdown.CurrentUsageWithPrecision != nil {
+			currentUsage = *breakdown.CurrentUsageWithPrecision
+		} else if breakdown.CurrentUsage != nil {
+			currentUsage = float64(*breakdown.CurrentUsage)
+		}
+		if breakdown.UsageLimitWithPrecision != nil {
+			usageLimit = *breakdown.UsageLimitWithPrecision
+		} else if breakdown.UsageLimit != nil {
+			usageLimit = float64(*breakdown.UsageLimit)
+		}
+
+		if breakdown.FreeTrialInfo != nil {
+			if breakdown.FreeTrialInfo.CurrentUsageWithPrecision != nil {
+				currentUsage += *breakdown.FreeTrialInfo.CurrentUsageWithPrecision
+			} else if breakdown.FreeTrialInfo.CurrentUsage != nil {
+				currentUsage += float64(*breakdown.FreeTrialInfo.CurrentUsage)
+			}
+			if breakdown.FreeTrialInfo.UsageLimitWithPrecision != nil {
+				usageLimit += *breakdown.FreeTrialInfo.UsageLimitWithPrecision
+			} else if breakdown.FreeTrialInfo.UsageLimit != nil {
+				usageLimit += float64(*breakdown.FreeTrialInfo.UsageLimit)
+			}
+		}
+
+		for _, bonus := range breakdown.Bonuses {
+			if bonus.CurrentUsage != nil {
+				currentUsage += *bonus.CurrentUsage
+			}
+			if bonus.UsageLimit != nil {
+				usageLimit += *bonus.UsageLimit
+			}
+		}
+
+		if breakdown.NextDateReset != nil {
+			nextReset = fmt.Sprintf("%v", *breakdown.NextDateReset)
+		}
+	}
+	if nextReset == "" && usage.NextDateReset != nil {
+		nextReset = fmt.Sprintf("%v", *usage.NextDateReset)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":             "ok",
+		"subscription_title": subscriptionTitle,
+		"current_usage":      currentUsage,
+		"usage_limit":        usageLimit,
+		"next_reset":         nextReset,
+	})
+}
+
+func isJWTExpired(accessToken string) bool {
+	if accessToken == "" {
+		return true
+	}
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload := parts[1]
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		switch len(payload) % 4 {
+		case 2:
+			payload += "=="
+		case 3:
+			payload += "="
+		}
+		decoded, err = base64.URLEncoding.DecodeString(payload)
+		if err != nil {
+			return false
+		}
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return false
+	}
+	if claims.Exp == 0 {
+		return false
+	}
+	return time.Unix(claims.Exp, 0).Before(time.Now().Add(5 * time.Minute))
+}
+
+func (h *Handler) refreshKiroToken(ctx context.Context, content map[string]interface{}, filePath string) (string, error) {
+	refreshToken, _ := content["refresh_token"].(string)
+	if refreshToken == "" {
+		refreshToken, _ = content["refreshToken"].(string)
+	}
+	if refreshToken == "" {
+		return "", fmt.Errorf("refresh token not found")
+	}
+
+	clientID, _ := content["client_id"].(string)
+	if clientID == "" {
+		clientID, _ = content["clientId"].(string)
+	}
+	clientSecret, _ := content["client_secret"].(string)
+	if clientSecret == "" {
+		clientSecret, _ = content["clientSecret"].(string)
+	}
+	authMethod, _ := content["auth_method"].(string)
+	if authMethod == "" {
+		authMethod, _ = content["authMethod"].(string)
+	}
+	region, _ := content["region"].(string)
+	startURL, _ := content["start_url"].(string)
+	if startURL == "" {
+		startURL, _ = content["startUrl"].(string)
+	}
+
+	var tokenData *kiroauth.KiroTokenData
+	var err error
+
+	ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
+
+	switch {
+	case clientID != "" && clientSecret != "" && authMethod == "idc" && region != "":
+		tokenData, err = ssoClient.RefreshTokenWithRegion(ctx, clientID, clientSecret, refreshToken, region, startURL)
+	case clientID != "" && clientSecret != "" && (authMethod == "builder-id" || authMethod == "oauth"):
+		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
+	case clientID != "" && clientSecret != "":
+		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
+	default:
+		oauth := kiroauth.NewKiroOAuth(h.cfg)
+		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("token refresh failed: %w", err)
+	}
+
+	now := time.Now()
+	content["access_token"] = tokenData.AccessToken
+	content["accessToken"] = tokenData.AccessToken
+	content["refresh_token"] = tokenData.RefreshToken
+	content["refreshToken"] = tokenData.RefreshToken
+	content["expires_at"] = tokenData.ExpiresAt
+	content["expiresAt"] = tokenData.ExpiresAt
+	content["last_refresh"] = now.Format(time.RFC3339)
+
+	if tokenData.ProfileArn != "" {
+		content["profile_arn"] = tokenData.ProfileArn
+		content["profileArn"] = tokenData.ProfileArn
+	}
+	if tokenData.ClientID != "" {
+		content["client_id"] = tokenData.ClientID
+		content["clientId"] = tokenData.ClientID
+	}
+	if tokenData.ClientSecret != "" {
+		content["client_secret"] = tokenData.ClientSecret
+		content["clientSecret"] = tokenData.ClientSecret
+	}
+
+	raw, err := json.MarshalIndent(content, "", "  ")
+	if err != nil {
+		return tokenData.AccessToken, fmt.Errorf("marshal failed: %w", err)
+	}
+
+	tmp := filePath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return tokenData.AccessToken, fmt.Errorf("write temp file failed: %w", err)
+	}
+	if err := os.Rename(tmp, filePath); err != nil {
+		return tokenData.AccessToken, fmt.Errorf("rename file failed: %w", err)
+	}
+
+	log.Infof("kiro usage: token refreshed successfully for %s, expires at %s", filepath.Base(filePath), tokenData.ExpiresAt)
+	return tokenData.AccessToken, nil
+}
+
+// KiroImportAccount 表示从 kiro-account-manager 导出的账号结构
+type KiroImportAccount struct {
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	Label        string `json:"label"`
+	Status       string `json:"status"`
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresAt    string `json:"expiresAt"`
+	Provider     string `json:"provider"`
+	UserID       string `json:"userId"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	Region       string `json:"region"`
+	ProfileArn   string `json:"profileArn"`
+	MachineID    string `json:"machineId"`
+	Password     string `json:"password"`
+}
+
+// KiroImportRequest 批量导入请求结构
+type KiroImportRequest struct {
+	Accounts []KiroImportAccount `json:"accounts"`
+}
+
+// KiroImportResult 单个账号导入结果
+type KiroImportResult struct {
+	Email    string `json:"email"`
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FilePath string `json:"file_path,omitempty"`
+}
+
+// ImportKiroAccounts 批量导入 Kiro 账号
+func (h *Handler) ImportKiroAccounts(c *gin.Context) {
+	ctx := context.Background()
+
+	var req KiroImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Errorf("ImportKiroAccounts: failed to parse request: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("无法解析请求: %v", err)})
+		return
+	}
+
+	if len(req.Accounts) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "没有提供账号数据"})
+		return
+	}
+
+	log.Infof("ImportKiroAccounts: importing %d accounts", len(req.Accounts))
+
+	// 统计结果
+	var successCount, failedCount, duplicateCount, skippedCount int
+	results := make([]KiroImportResult, 0, len(req.Accounts))
+
+	// 跟踪已存在的账号（email + provider 作为唯一键）
+	existingAccounts := make(map[string]bool)
+
+	// 加载现有的 auth 文件来检测重复
+	authDir := h.cfg.AuthDir
+	files, _ := os.ReadDir(authDir)
+	for _, file := range files {
+		if !strings.HasPrefix(file.Name(), "kiro-") || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		filePath := filepath.Join(authDir, file.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		var content map[string]interface{}
+		if err := json.Unmarshal(data, &content); err != nil {
+			continue
+		}
+		email, _ := content["email"].(string)
+		provider, _ := content["provider"].(string)
+		if email != "" && provider != "" {
+			key := strings.ToLower(email) + "|" + strings.ToLower(provider)
+			existingAccounts[key] = true
+		}
+	}
+
+	// 本次导入中跟踪已处理的账号
+	processedAccounts := make(map[string]bool)
+
+	now := time.Now()
+	for _, account := range req.Accounts {
+		result := KiroImportResult{
+			Email:    account.Email,
+			Provider: account.Provider,
+		}
+
+		// 验证必填字段
+		if account.RefreshToken == "" {
+			result.Status = "failed"
+			result.Error = "refreshToken 为空"
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		// 验证 refreshToken 格式（必须以 aor 开头）
+		if !strings.HasPrefix(account.RefreshToken, "aor") {
+			result.Status = "failed"
+			result.Error = "refreshToken 格式无效（必须以 'aor' 开头）"
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		// 从 accessToken 中提取 email（如果未提供）
+		email := account.Email
+		if email == "" {
+			email = kiroauth.ExtractEmailFromJWT(account.AccessToken)
+		}
+		if email == "" {
+			result.Status = "failed"
+			result.Error = "无法获取 email"
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+		result.Email = email
+
+		// 推断 provider（如果未提供）
+		provider := account.Provider
+		if provider == "" {
+			// 有 clientId 和 clientSecret = IdC 账号 (BuilderId/Enterprise)
+			// 没有 = Social 账号 (Google/GitHub)
+			if account.ClientID != "" && account.ClientSecret != "" {
+				provider = "BuilderId"
+			} else {
+				provider = "Google"
+			}
+		}
+		result.Provider = provider
+
+		// 检查重复（email + provider）
+		uniqueKey := strings.ToLower(email) + "|" + strings.ToLower(provider)
+
+		// 检查是否在本次导入中已处理
+		if processedAccounts[uniqueKey] {
+			result.Status = "skipped"
+			result.Error = "本次导入中重复"
+			results = append(results, result)
+			skippedCount++
+			continue
+		}
+
+		// 检查是否已存在于系统中
+		if existingAccounts[uniqueKey] {
+			result.Status = "duplicate"
+			result.Error = "账号已存在"
+			results = append(results, result)
+			duplicateCount++
+			continue
+		}
+
+		// 生成文件名
+		idPart := kiroauth.SanitizeEmailForFilename(email)
+		if idPart == "" {
+			idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+		}
+		fileName := fmt.Sprintf("kiro-%s-%s.json", strings.ToLower(provider), idPart)
+
+		// 解析 expiresAt 时间
+		expiresAtStr := account.ExpiresAt
+		if expiresAtStr == "" {
+			expiresAtStr = now.Add(1 * time.Hour).Format(time.RFC3339)
+		} else {
+			// 尝试解析多种时间格式并转换为 RFC3339
+			parsedTime, parseErr := parseFlexibleTime(expiresAtStr)
+			if parseErr == nil {
+				expiresAtStr = parsedTime.Format(time.RFC3339)
+			}
+		}
+
+		authMethod := "social"
+		if account.ClientID != "" && account.ClientSecret != "" {
+			authMethod = "builder-id"
+		}
+
+		// 构建 auth 记录
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Metadata: map[string]any{
+				"type":          "kiro",
+				"access_token":  account.AccessToken,
+				"refresh_token": account.RefreshToken,
+				"profile_arn":   account.ProfileArn,
+				"expires_at":    expiresAtStr,
+				"auth_method":   authMethod,
+				"provider":      provider,
+				"email":         email,
+				"last_refresh":  now.Format(time.RFC3339),
+			},
+		}
+
+		// 如果有 IdC 相关字段，添加到 metadata
+		if account.ClientID != "" {
+			record.Metadata["client_id"] = account.ClientID
+		}
+		if account.ClientSecret != "" {
+			record.Metadata["client_secret"] = account.ClientSecret
+		}
+		if account.Region != "" {
+			record.Metadata["region"] = account.Region
+		}
+		if account.MachineID != "" {
+			record.Metadata["machine_id"] = account.MachineID
+		}
+		if account.Label != "" {
+			record.Metadata["label"] = account.Label
+		}
+
+		// 保存记录
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("ImportKiroAccounts: failed to save %s: %v", email, errSave)
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("保存失败: %v", errSave)
+			results = append(results, result)
+			failedCount++
+			continue
+		}
+
+		log.Infof("ImportKiroAccounts: saved %s to %s", email, savedPath)
+
+		result.Status = "success"
+		result.FilePath = savedPath
+		results = append(results, result)
+		successCount++
+
+		// 标记已处理
+		processedAccounts[uniqueKey] = true
+		existingAccounts[uniqueKey] = true
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"success":   successCount,
+		"failed":    failedCount,
+		"duplicate": duplicateCount,
+		"skipped":   skippedCount,
+		"total":     len(req.Accounts),
+		"results":   results,
+	})
+}
+
+// parseFlexibleTime 解析多种时间格式
+func parseFlexibleTime(timeStr string) (time.Time, error) {
+	formats := []string{
+		"2006/01/02 15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z07:00",
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006/01/02",
+		"2006-01-02",
+	}
+	for _, format := range formats {
+		if t, err := time.Parse(format, timeStr); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("无法解析时间格式: %s", timeStr)
 }

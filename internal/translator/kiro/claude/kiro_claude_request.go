@@ -17,7 +17,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-
 // Kiro API request structs - field order determines JSON key order
 
 // KiroPayload is the top-level request structure for Kiro API
@@ -33,7 +32,6 @@ type KiroInferenceConfig struct {
 	Temperature float64 `json:"temperature,omitempty"`
 	TopP        float64 `json:"topP,omitempty"`
 }
-
 
 // KiroConversationState holds the conversation context
 type KiroConversationState struct {
@@ -374,7 +372,6 @@ func hasThinkingTagInBody(body []byte) bool {
 	return strings.Contains(bodyStr, "<thinking_mode>") || strings.Contains(bodyStr, "<max_thinking_length>")
 }
 
-
 // IsThinkingEnabledFromHeader checks if thinking mode is enabled via Anthropic-Beta header.
 // Claude CLI uses "Anthropic-Beta: interleaved-thinking-2025-05-14" to enable thinking.
 func IsThinkingEnabledFromHeader(headers http.Header) bool {
@@ -503,7 +500,33 @@ func convertClaudeToolsToKiro(tools gjson.Result) []KiroToolWrapper {
 	}
 
 	for _, tool := range tools.Array() {
+		toolType := tool.Get("type").String()
 		name := tool.Get("name").String()
+
+		// Skip Claude built-in tools by type
+		if toolType == "web_search_preview" || toolType == "code_execution" ||
+			toolType == "computer_20241022" || toolType == "text_editor_20241022" ||
+			toolType == "bash_20241022" || toolType == "mcp" {
+			log.Debugf("kiro: skipping unsupported Claude built-in tool type: %s", toolType)
+			continue
+		}
+
+		// Skip Claude built-in tools by name (these may come as type="function" with specific names)
+		if name == "web_search" || name == "web_search_preview" ||
+			name == "code_execution" || name == "code_interpreter" ||
+			strings.HasPrefix(name, "computer_") ||
+			strings.HasPrefix(name, "text_editor_") ||
+			strings.HasPrefix(name, "bash_") ||
+			strings.HasPrefix(name, "str_replace_editor") {
+			log.Debugf("kiro: skipping unsupported Claude built-in tool name: %s", name)
+			continue
+		}
+
+		if name == "" {
+			log.Debugf("kiro: skipping tool with empty name (type: %s)", toolType)
+			continue
+		}
+
 		description := tool.Get("description").String()
 		inputSchema := tool.Get("input_schema").Value()
 
