@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -98,14 +99,13 @@ func readLog(path string, cutoff time.Time) ([]profile, []event, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.Contains(line, "antidetect decision") {
+		fields, at, ok := parseLine(line)
+		if !ok {
 			continue
 		}
-		at := parseTimestamp(line)
 		if !at.IsZero() && at.Before(cutoff) {
 			continue
 		}
-		fields := parseFields(line)
 		if fields["event"] == "credential_profile" {
 			profiles = append(profiles, parseProfile(fields, at))
 			continue
@@ -140,6 +140,50 @@ func parseTimestamp(line string) time.Time {
 		return time.Time{}
 	}
 	return parsed
+}
+
+// parseLine understands both log shapes this project can emit: the default
+// text formatter and logrus JSON output. Deployments switch between them, and a
+// post-mortem tool that only reads one of them is useless on the other.
+func parseLine(line string) (map[string]string, time.Time, bool) {
+	if strings.HasPrefix(strings.TrimSpace(line), "{") {
+		return parseJSONLine(line)
+	}
+	if !strings.Contains(line, "antidetect decision") {
+		return nil, time.Time{}, false
+	}
+	return parseFields(line), parseTimestamp(line), true
+}
+
+// parseJSONLine reads one logrus JSON record.
+func parseJSONLine(line string) (map[string]string, time.Time, bool) {
+	var record map[string]any
+	if errUnmarshal := json.Unmarshal([]byte(line), &record); errUnmarshal != nil {
+		return nil, time.Time{}, false
+	}
+	if message, _ := record["msg"].(string); message != "antidetect decision" {
+		return nil, time.Time{}, false
+	}
+	fields := make(map[string]string, len(record))
+	for key, value := range record {
+		switch typed := value.(type) {
+		case string:
+			fields[key] = typed
+		case float64:
+			fields[key] = strconv.FormatFloat(typed, 'f', -1, 64)
+		case bool:
+			fields[key] = strconv.FormatBool(typed)
+		}
+	}
+	var at time.Time
+	if raw, _ := record["time"].(string); raw != "" {
+		if parsed, errParse := time.Parse(time.RFC3339Nano, raw); errParse == nil {
+			at = parsed
+		} else if parsed, errParse := time.Parse(time.RFC3339, raw); errParse == nil {
+			at = parsed
+		}
+	}
+	return fields, at, true
 }
 
 // fieldPattern matches the formatter's two value shapes: quoted free text and

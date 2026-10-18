@@ -19,7 +19,17 @@ const WindowGateEnv = "CPA_ANTIDETECT_WINDOW_GATE"
 var (
 	claudeWindowOnce  sync.Once
 	claudeWindowStore *window.Store
+
+	// missingHeaderWarned rate-limits the "no quota headers" warning per
+	// credential: without it, an upstream that renames the headers would
+	// either flood the log or, worse, fail silently.
+	missingHeaderMu       sync.Mutex
+	missingHeaderWarnedAt = make(map[string]time.Time)
 )
+
+// MissingHeaderWarnInterval bounds how often one credential may report that a
+// response carried no quota window headers.
+const MissingHeaderWarnInterval = 10 * time.Minute
 
 func claudeWindows() *window.Store {
 	claudeWindowOnce.Do(func() {
@@ -88,6 +98,7 @@ func observeClaudeWindow(auth *cliproxyauth.Auth, headers http.Header) {
 	now := time.Now()
 	snapshots := window.ParseHeaders(headers, now)
 	if len(snapshots) == 0 {
+		warnMissingWindowHeaders(auth, now)
 		return
 	}
 	credentialID := authCredentialID(auth)
@@ -108,4 +119,33 @@ func observeClaudeWindow(auth *cliproxyauth.Auth, headers http.Header) {
 			Detail:       string(snapshot.Kind) + " " + string(state),
 		})
 	}
+}
+
+// warnMissingWindowHeaders reports that a response carried no usable quota
+// window headers.
+//
+// The admission gate is only as good as those headers: if the upstream renames
+// them, the gate keeps running and silently never blocks. A warning turns that
+// into something an operator can see, and the per-credential interval keeps it
+// from becoming a log flood on a large fleet.
+func warnMissingWindowHeaders(auth *cliproxyauth.Auth, now time.Time) {
+	credentialID := authCredentialID(auth)
+	if credentialID == "" {
+		return
+	}
+	missingHeaderMu.Lock()
+	last, seen := missingHeaderWarnedAt[credentialID]
+	if seen && now.Sub(last) < MissingHeaderWarnInterval {
+		missingHeaderMu.Unlock()
+		return
+	}
+	missingHeaderWarnedAt[credentialID] = now
+	missingHeaderMu.Unlock()
+
+	audit.Log(audit.Record{
+		Event:        "quota_window_headers",
+		Decision:     audit.DecisionMissing,
+		CredentialID: audit.ID(credentialID),
+		Detail:       "response carried no anthropic-ratelimit-unified-* headers; the window gate cannot act on this credential",
+	})
 }

@@ -24,6 +24,8 @@ const (
 	DecisionPaced    Decision = "paced"
 	DecisionUnknown  Decision = "unknown_client"
 	DecisionAccepted Decision = "accepted"
+	// DecisionMissing means an expected signal never arrived.
+	DecisionMissing Decision = "missing"
 )
 
 // Record is one auditable decision.

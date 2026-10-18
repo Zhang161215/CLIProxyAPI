@@ -104,3 +104,44 @@ func TestParseTimestampRejectsOtherLines(t *testing.T) {
 		t.Fatalf("parsed %v from a line without a stamp", got)
 	}
 }
+
+const sampleJSONLog = `{"level":"info","msg":"antidetect decision","time":"2026-10-18T10:00:00Z","audit":"antidetect","event":"credential_profile","decision":"accepted","credential":"abc123","summary":"requests=5 allowed=5 blocked=0 paced=0 ips=2 uas=1 entry=1 sessions=2 max_util=0.30"}
+{"level":"warning","msg":"antidetect decision","time":"2026-10-18T10:01:00Z","audit":"antidetect","event":"content_gate","decision":"blocked","credential":"abc123","rule":"jailbreak.zh","category":"jailbreak"}
+{"level":"info","msg":"some other line","time":"2026-10-18T10:02:00Z"}
+`
+
+func TestReadLogJSONFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.jsonl")
+	if errWrite := os.WriteFile(path, []byte(sampleJSONLog), 0o644); errWrite != nil {
+		t.Fatalf("write log: %v", errWrite)
+	}
+
+	profiles, events, errRead := readLog(path, time.Time{})
+	if errRead != nil {
+		t.Fatalf("readLog: %v", errRead)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %d, want 1", len(profiles))
+	}
+	if profiles[0].Requests != 5 || profiles[0].IPs != 2 {
+		t.Fatalf("profile parsed wrong: %+v", profiles[0])
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1 (the unrelated line must be skipped)", len(events))
+	}
+	if events[0].Rule != "jailbreak.zh" {
+		t.Fatalf("rule = %q", events[0].Rule)
+	}
+	if events[0].At.IsZero() {
+		t.Fatal("JSON timestamp must parse")
+	}
+}
+
+func TestJSONLineRejectsForeignRecords(t *testing.T) {
+	if _, _, ok := parseJSONLine(`{"msg":"not ours"}`); ok {
+		t.Fatal("records from other components must be ignored")
+	}
+	if _, _, ok := parseJSONLine(`{not json`); ok {
+		t.Fatal("malformed JSON must be ignored")
+	}
+}
