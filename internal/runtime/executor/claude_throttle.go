@@ -131,8 +131,9 @@ func awaitClaudeRateSlot(ctx context.Context, auth *cliproxyauth.Auth) error {
 				Detail:       "wait budget exhausted: " + maxThrottleWait().String(),
 			})
 			return statusErr{
-				code: http.StatusTooManyRequests,
-				msg:  fmt.Sprintf("antidetect: outbound pacing exceeded %s for this credential", maxThrottleWait()),
+				code:       http.StatusTooManyRequests,
+				msg:        fmt.Sprintf("antidetect: outbound pacing exceeded %s for this credential", maxThrottleWait()),
+				retryAfter: &wait,
 			}
 		}
 		timer := time.NewTimer(wait)

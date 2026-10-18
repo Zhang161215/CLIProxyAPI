@@ -130,7 +130,21 @@ antidetect decision event="credential_profile" decision="accepted"
 | `uas` | 1 | >1 = 下游混用多种客户端 |
 | `max_util` | <0.9 | ≥0.95 = 窗口被打满 |
 
-**日志量估算**：每凭证每天 288 行。100 个号 ≈ 2.9 万行/天，约 15–20 MB，记得配轮转。
+**日志量估算**：每凭证每天 288 行。100 个号 ≈ 2.9 万行/天，约 15–20 MB。
+
+### 落盘与轮转（上游已内置，只需打开）
+
+```yaml
+observability:
+  logs:
+    logging-to-file: true          # 写入轮转文件而不是 stdout
+    logs-max-total-size-mb: 2048   # 超过后删最旧的文件
+    request-log: false             # 需要逐请求日志时才开，量很大
+```
+
+轮转由 lumberjack 完成，无需外部 logrotate。审计记录走同一套日志管道，打开这个开关就会一起落盘。
+
+> 建议：`logs-max-total-size-mb` 按「号数 × 0.2 MB/天 × 保留天数」估。100 个号保留 30 天约 600 MB。
 
 ---
 

@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"context"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/audit"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/egress"
@@ -30,8 +33,39 @@ func claudeEgressPolicy() (egress.Config, *egress.Binder) {
 			egressConfig = cfg
 		}
 		egressBinder = egress.NewBinder()
+		startEgressWatcher(egressConfig)
 	})
 	return egressConfig, egressBinder
+}
+
+// EgressEchoEnv overrides the address used to learn an exit's public IP.
+const EgressEchoEnv = "CPA_ANTIDETECT_EGRESS_ECHO"
+
+// startEgressWatcher records each exit's address and reports changes.
+//
+// A binding is only as good as the address behind it: when an ISP or a proxy
+// vendor rotates it, the credential keeps working and quietly stops matching the
+// exit it was bound to. Watching for the change is the only way to notice.
+func startEgressWatcher(cfg egress.Config) {
+	if len(cfg.Pools) == 0 {
+		return
+	}
+	watcher := egress.NewWatcher(egress.HTTPProbe(os.Getenv(EgressEchoEnv)), 10*time.Minute, recordEgressDrift)
+	go func() {
+		// Establish the baseline immediately, then keep watching.
+		watcher.CheckOnce(context.Background(), cfg)
+		watcher.Run(context.Background(), cfg)
+	}()
+}
+
+// recordEgressDrift writes one audit line per changed exit.
+func recordEgressDrift(drift egress.Drift) {
+	audit.Log(audit.Record{
+		Event:    "egress_drift",
+		Decision: audit.DecisionDrift,
+		Detail: "pool " + drift.PoolID + " moved from " + audit.ID(drift.Before) +
+			" to " + audit.ID(drift.After),
+	})
 }
 
 // setClaudeEgressPolicyForTest swaps the policy and returns a restore func.

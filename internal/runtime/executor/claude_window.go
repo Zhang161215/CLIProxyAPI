@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -82,9 +81,37 @@ func checkClaudeWindow(auth *cliproxyauth.Auth) error {
 		Detail:       "window at or above the block threshold",
 	})
 	return statusErr{
-		code: http.StatusTooManyRequests,
-		msg:  fmt.Sprintf("antidetect: credential quota window is full; retry after the window resets"),
+		code:       http.StatusTooManyRequests,
+		msg:        "antidetect: credential quota window is full; retry after the window resets",
+		retryAfter: windowRetryAfter(credentialID),
 	}
+}
+
+// windowRetryAfter reports how long until the earliest window on this
+// credential resets.
+//
+// A bare 429 invites the caller to hammer; a Retry-After converts that into a
+// scheduled retry, which is also what a real client does.
+func windowRetryAfter(credentialID string) *time.Duration {
+	snapshots := claudeWindows().Snapshot(credentialID)
+	if len(snapshots) == 0 {
+		return nil
+	}
+	now := time.Now()
+	var earliest time.Time
+	for _, snapshot := range snapshots {
+		if snapshot.ResetsAt.IsZero() || !snapshot.ResetsAt.After(now) {
+			continue
+		}
+		if earliest.IsZero() || snapshot.ResetsAt.Before(earliest) {
+			earliest = snapshot.ResetsAt
+		}
+	}
+	if earliest.IsZero() {
+		return nil
+	}
+	wait := earliest.Sub(now)
+	return &wait
 }
 
 // observeClaudeWindow records how much quota room a credential had when it was

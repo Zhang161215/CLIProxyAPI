@@ -28,6 +28,8 @@ const (
 	DecisionMissing Decision = "missing"
 	// DecisionCollision means two credentials look like the same machine.
 	DecisionCollision Decision = "collision"
+	// DecisionDrift means an exit address changed after it was recorded.
+	DecisionDrift Decision = "drift"
 )
 
 // Record is one auditable decision.

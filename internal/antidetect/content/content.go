@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Category groups rules by the failure they prevent.
@@ -72,8 +73,13 @@ var builtinPatterns = []struct {
 	{"nsfw.zh", CategoryNSFW, `(写|来|生成).{0,6}(色情|黄文|露骨|性行为)`},
 }
 
-// rules is the compiled set, built once.
-var rules = compileRules()
+// activeRules is the compiled set: builtins plus any operator-supplied rules.
+// It is replaced atomically on reload so a request never sees a half-built set.
+var (
+	rulesMu     sync.RWMutex
+	activeRules = compileRules()
+	baseRules   = activeRules
+)
 
 func compileRules() []Rule {
 	compiled := make([]Rule, 0, len(builtinPatterns))
@@ -89,7 +95,23 @@ func compileRules() []Rule {
 
 // Rules returns the active rule set. Callers must not mutate it.
 func Rules() []Rule {
-	return rules
+	rulesMu.RLock()
+	defer rulesMu.RUnlock()
+	return activeRules
+}
+
+// SetExtraRules installs operator-supplied rules on top of the builtins.
+//
+// Reloading is a replacement, not a merge with the previous extra set: an
+// operator who removes a rule expects it to stop matching.
+func SetExtraRules(extra []Rule) {
+	combined := make([]Rule, 0, len(baseRules)+len(extra))
+	combined = append(combined, baseRules...)
+	combined = append(combined, extra...)
+
+	rulesMu.Lock()
+	activeRules = combined
+	rulesMu.Unlock()
 }
 
 // Scan evaluates one text against every rule and returns the first match.
@@ -97,7 +119,7 @@ func Scan(text string) Verdict {
 	if strings.TrimSpace(text) == "" {
 		return Verdict{}
 	}
-	for _, rule := range rules {
+	for _, rule := range Rules() {
 		loc := rule.Pattern.FindStringIndex(text)
 		if loc == nil {
 			continue

@@ -92,3 +92,50 @@ func TestObserveClaudeWindowIgnoresEmptyHeaders(t *testing.T) {
 		t.Fatalf("no headers must produce no snapshot, got %v", snapshots)
 	}
 }
+
+// A blocked window must tell the caller when to come back; a bare 429 invites
+// a retry storm.
+func TestBlockedWindowCarriesRetryAfter(t *testing.T) {
+	store := window.NewStore(nil)
+	resetAt := time.Now().Add(2 * time.Hour)
+	store.Observe("cred-reset", []window.Snapshot{{
+		Kind:        window.KindShort,
+		Utilization: 0.99,
+		ResetsAt:    resetAt,
+		Observed:    time.Now(),
+	}})
+	restore := setClaudeWindowStoreForTest(store)
+	defer restore()
+
+	errWindow := checkClaudeWindow(&cliproxyauth.Auth{ID: "cred-reset"})
+	statusErr, ok := errWindow.(statusErr)
+	if !ok {
+		t.Fatalf("error %T must be a statusErr", errWindow)
+	}
+	if statusErr.retryAfter == nil {
+		t.Fatal("a blocked window must carry Retry-After")
+	}
+	if *statusErr.retryAfter <= time.Hour {
+		t.Fatalf("retry after %v, want roughly the reset distance", *statusErr.retryAfter)
+	}
+}
+
+func TestBlockedWindowWithoutResetHasNoRetryAfter(t *testing.T) {
+	store := window.NewStore(nil)
+	store.Observe("cred-noreset", []window.Snapshot{{
+		Kind:        window.KindShort,
+		Utilization: 0.99,
+		Observed:    time.Now(),
+	}})
+	restore := setClaudeWindowStoreForTest(store)
+	defer restore()
+
+	errWindow := checkClaudeWindow(&cliproxyauth.Auth{ID: "cred-noreset"})
+	statusErr, ok := errWindow.(statusErr)
+	if !ok {
+		t.Fatalf("error %T must be a statusErr", errWindow)
+	}
+	if statusErr.retryAfter != nil {
+		t.Fatalf("no reset time means no Retry-After, got %v", *statusErr.retryAfter)
+	}
+}

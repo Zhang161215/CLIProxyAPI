@@ -8,10 +8,49 @@
 ## [Unreleased]
 
 候选：
-- 调度层按窗口剩余量主动分流（当前只有准入拦截，不会切号）
-- 内容闸规则热加载（当前改规则要重启）
-- 审计日志独立落盘与轮转（当前走标准日志管道）
-- 出口 IP 漂移检测（当前只做逻辑绑定，不校验 IP 是否变化）
+- 调度层按窗口剩余量主动分流
+
+  现状：窗口满时在请求到达执行器后拦下（429）。要做到"自动切到别的号"必须改 conductor 的选号逻辑，
+  与"只改常量/加新包、不改原文件判断"的 fork 纪律冲突。**已评估，暂不做**：拦截已经消除了
+  "硬冲满窗口"这个最危险的行为，切号带来的是体验改善，不是风险改善。
+
+---
+
+## [0.4.0] — 2026-10-18 · 让闸门能自己发现问题
+
+### 新增
+
+**出口 IP 漂移检测** · `internal/antidetect/egress/probe.go`
+
+- 每 10 分钟通过出口探测一次公网 IP（默认 `https://api.ipify.org`，可用
+  `CPA_ANTIDETECT_EGRESS_ECHO` 覆盖），首次记录为基线，变化时记
+  `egress_drift / drift`
+- 探测失败不清空基线：否则下一次成功会被误判为"漂移"
+- 日志里只出现 IP 的哈希，不落原文
+- 动机：T-16 把口径从"纯净度"改成"稳定性"，但没有手段发现"地址悄悄变了"
+- 验证：`probe_test.go`（6 条：首次不报 / 变化报一次 / 失败不算 / 无代理跳过 / 池间独立 / nil 安全）
+
+**内容规则热加载** · `internal/antidetect/content/reload.go`
+
+- `CPA_ANTIDETECT_CONTENT_RULES` 指向 JSON 规则文件，每 30 秒检查 mtime/大小
+- 校验 id、category、正则；任一非法则**整批拒绝**，保留上一版规则
+- 替换语义：从文件里删掉的规则会停止匹配（不是合并）
+- 动机：误伤时要能五分钟改掉，而不是发一次版
+- 验证：`reload_test.go`（6 条：编译 / 五类非法输入 / 替换语义 / 变更重载 / 失败回调 / nil 安全）
+
+**窗口拦截带 Retry-After** · `claude_window.go`、`claude_throttle.go`
+
+- 窗口满时按最近的 `resets_at` 计算等待时间写进 429；节流超预算时带上本次等待值
+- 动机：裸 429 会诱发重试风暴，而带 Retry-After 的 429 才是"真实客户端"的行为
+- 验证：`claude_window_gate_test.go` 新增 2 条（有 reset 带值 / 无 reset 不带）
+
+### 变更
+
+- `audit` 增加 `DecisionDrift`
+
+### 文档
+
+- `DEPLOY.md` 增加日志落盘与轮转章节（上游已内置 lumberjack，只需 `logging-to-file: true`）
 
 ---
 

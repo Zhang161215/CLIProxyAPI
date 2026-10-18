@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/audit"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/content"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // ContentGateEnv disables the pre-upstream content gate. It exists so an
@@ -43,6 +45,35 @@ func (e *claudeContentBlockError) IsRequestScoped() bool { return true }
 // IsCredentialScoped is false: the credential did nothing wrong.
 func (e *claudeContentBlockError) IsCredentialScoped() bool { return false }
 
+var (
+	contentRulesOnce sync.Once
+	contentRulesStop = make(chan struct{})
+)
+
+// ensureContentRules loads operator rules once and keeps watching the file.
+//
+// Reloading from disk means a misfiring rule can be corrected without a rebuild,
+// which is the difference between a five-minute fix and a deployment window.
+func ensureContentRules() {
+	contentRulesOnce.Do(func() {
+		path := strings.TrimSpace(os.Getenv(content.RulesEnv))
+		if path == "" {
+			return
+		}
+		watcher := content.NewWatcher(path, 0)
+		watcher.OnApply(func(count int) {
+			log.Infof("antidetect: loaded %d content rules from %s", count, path)
+		})
+		watcher.OnError(func(err error) {
+			log.Warnf("antidetect: content rules reload failed: %v", err)
+		})
+		if errCheck := watcher.CheckOnce(); errCheck != nil {
+			log.Warnf("antidetect: initial content rules load failed: %v", errCheck)
+		}
+		go watcher.Run(contentRulesStop)
+	})
+}
+
 // contentGateEnabled reports whether the gate should run.
 func contentGateEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(ContentGateEnv))) {
@@ -60,6 +91,7 @@ func gateClaudeContent(auth *cliproxyauth.Auth, payload []byte) error {
 	if !contentGateEnabled() {
 		return nil
 	}
+	ensureContentRules()
 	verdict := content.Evaluate(payload)
 	if !verdict.Blocked {
 		return nil
