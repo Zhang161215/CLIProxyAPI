@@ -1,0 +1,110 @@
+name: antidetect build
+
+# Builds downloadable binaries for every platform this fork supports.
+# Kept separate from upstream's release.yaml, which is tag-driven and carries a
+# much larger matrix (plugins, FreeBSD, generated release notes). This workflow
+# answers one question: does the current main build, and where can I download it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to build"
+        required: false
+        default: "main"
+  push:
+    branches:
+      - main
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "sdk/**"
+      - "tools/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/build-artifacts.yml"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.4"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./internal/antidetect/... ./internal/runtime/executor/... ./internal/auth/claude/... ./tools/...
+      - name: Test
+        run: go test ./...
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, asset: cpa-linux-amd64 }
+          - { goos: linux,   goarch: arm64, asset: cpa-linux-arm64 }
+          - { goos: windows, goarch: amd64, asset: cpa-windows-amd64.exe }
+          - { goos: windows, goarch: arm64, asset: cpa-windows-arm64.exe }
+          - { goos: darwin,  goarch: arm64, asset: cpa-darwin-arm64 }
+          - { goos: darwin,  goarch: amd64, asset: cpa-darwin-amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          commit="$(git rev-parse --short HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p out
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${version}-antidetect -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -o "out/${{ matrix.asset }}" ./cmd/server
+
+      - name: Build postmortem tool
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          tool="cpa-postmortem-${{ matrix.goos }}-${{ matrix.goarch }}"
+          case "${{ matrix.goos }}" in
+            windows) tool="${tool}.exe" ;;
+          esac
+          go build -trimpath -ldflags "-s -w" -o "out/${tool}" ./tools/postmortem
+          ( cd out && sha256sum * > SHA256SUMS.txt )
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
