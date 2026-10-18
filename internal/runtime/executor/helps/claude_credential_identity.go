@@ -158,8 +158,15 @@ func EnsureClaudeCredentialDevicePoolRequired(ctx context.Context, auth *cliprox
 	} else if found {
 		var stored []string
 		if errUnmarshal := json.Unmarshal(raw, &stored); errUnmarshal == nil {
-			if deviceIDs := claudeauth.NormalizeDeviceIDPool(stored); len(deviceIDs) == claudeauth.ClaudeDevicePoolSize {
-				if !claudeauth.HasCanonicalDeviceIDPool(stored) {
+			target := claudeauth.DevicePoolSize()
+			deviceIDs := claudeauth.NormalizeDeviceIDPool(stored)
+			if len(deviceIDs) > target {
+				// A pool larger than the configured size is legacy data: collapse
+				// it, which is what the real client presents.
+				deviceIDs = deviceIDs[:target]
+			}
+			if len(deviceIDs) == target {
+				if len(stored) != len(deviceIDs) || !claudeauth.HasCanonicalDeviceIDPool(stored) {
 					canonicalRaw, errMarshal := json.Marshal(deviceIDs)
 					if errMarshal != nil {
 						return nil, fmt.Errorf("ensure Claude credential device pool: marshal canonical Home KV value: %w", errMarshal)
@@ -179,7 +186,7 @@ func EnsureClaudeCredentialDevicePoolRequired(ctx context.Context, auth *cliprox
 	}
 
 	deviceIDs := credentialCandidate
-	if len(deviceIDs) != claudeauth.ClaudeDevicePoolSize {
+	if len(deviceIDs) != claudeauth.DevicePoolSize() {
 		var errGenerate error
 		deviceIDs, errGenerate = claudeauth.GenerateDeviceIDPool()
 		if errGenerate != nil {
@@ -205,8 +212,11 @@ func EnsureClaudeCredentialDevicePoolRequired(ctx context.Context, auth *cliprox
 		return nil, fmt.Errorf("ensure Claude credential device pool: decode Home KV value: %w", errUnmarshal)
 	}
 	deviceIDs = claudeauth.NormalizeDeviceIDPool(stored)
-	if len(deviceIDs) != claudeauth.ClaudeDevicePoolSize {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV pool has %d entries, want %d", len(deviceIDs), claudeauth.ClaudeDevicePoolSize)
+	if len(deviceIDs) > claudeauth.DevicePoolSize() {
+		deviceIDs = deviceIDs[:claudeauth.DevicePoolSize()]
+	}
+	if len(deviceIDs) != claudeauth.DevicePoolSize() {
+		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV pool has %d entries, want %d", len(deviceIDs), claudeauth.DevicePoolSize())
 	}
 	claudeauth.StoreDeviceIDPool(&auth.Metadata, deviceIDs)
 	return deviceIDs, nil

@@ -14,8 +14,10 @@
 package fingerprint
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"regexp"
 	"sort"
 	"strings"
@@ -69,18 +71,84 @@ func isCommitterAddress(value string) bool {
 // Normalization is lowercase-only: two paths that differ in case are treated as
 // the same machine, which is the direction that produces a warning rather than
 // silently missing one.
+// markers are the cheap prefilter: a body without any of these cannot produce a
+// filesystem, repository or committer fingerprint, so the structured scan is
+// skipped entirely. Most chat traffic hits this path.
+var markers = [][]byte{
+	[]byte("/Users/"), []byte("/home/"), []byte("/root/"), []byte("Users\\"),
+	[]byte("@"), []byte("github.com"), []byte("gitlab.com"), []byte("bitbucket.org"),
+}
+
+func mayContainFingerprint(payload []byte) bool {
+	for _, marker := range markers {
+		if bytes.Contains(payload, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// scanRegion returns the part of the payload worth searching.
+func scanRegion(payload []byte) string {
+	var doc struct {
+		System   json.RawMessage `json:"system"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if errUnmarshal := json.Unmarshal(payload, &doc); errUnmarshal == nil {
+		var builder strings.Builder
+		builder.Write(doc.System)
+		for index := len(doc.Messages) - 1; index >= 0; index-- {
+			if doc.Messages[index].Role != "user" {
+				continue
+			}
+			builder.Write(doc.Messages[index].Content)
+			break
+		}
+		if builder.Len() > 0 {
+			return truncate(builder.String(), maxFieldBytes)
+		}
+	}
+	return truncate(string(payload), maxScannedBytes)
+}
+
+func truncate(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
+
 func hash(kind, value string) string {
 	sum := sha256.Sum256([]byte("cpa-fingerprint|" + kind + "|" + strings.ToLower(strings.TrimSpace(value))))
 	return kind + ":" + hex.EncodeToString(sum[:6])
 }
 
+// maxScannedBytes bounds how much of a payload is searched when the structure
+// cannot be located. A Claude body can exceed a megabyte, and running four
+// regular expressions over all of it measured at ~53 ms per request — enough to
+// show up in latency.
+const maxScannedBytes = 32 * 1024
+
+// maxFieldBytes bounds one extracted text field.
+const maxFieldBytes = 16 * 1024
+
 // Extract returns hashed fingerprints found in a request payload.
 //
-// It reads the raw body rather than a decoded structure: the fragments of
-// interest live inside free-form prompt text, where a JSON walk would not reach
-// them.
+// It searches the fields that actually carry environment text (the system block
+// and the newest user turn) rather than the whole body, then falls back to a
+// bounded prefix. Same findings, without paying for a megabyte of scanning on
+// every request.
 func Extract(payload []byte) []string {
-	body := string(payload)
+	if !mayContainFingerprint(payload) {
+		return nil
+	}
+	body := scanRegion(payload)
+	if body == "" {
+		return nil
+	}
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 8)
 

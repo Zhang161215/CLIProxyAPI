@@ -164,6 +164,16 @@ func Evaluate(payload []byte) Verdict {
 // work. Only the last user turn is considered; earlier turns were already
 // scanned when they were the newest.
 func LatestUserText(payload []byte) string {
+	if text := latestMessageText(payload); text != "" {
+		return text
+	}
+	// The Responses API carries the conversation under "input" instead of
+	// "messages". Without this branch the gate is bypassed entirely by any
+	// client using that format.
+	return latestInputText(payload)
+}
+
+func latestMessageText(payload []byte) string {
 	var body struct {
 		Messages []struct {
 			Role    string          `json:"role"`
@@ -180,6 +190,38 @@ func LatestUserText(payload []byte) string {
 		}
 		text := textFromContent(message.Content)
 		if strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func latestInputText(payload []byte) string {
+	var body struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil || len(body.Input) == 0 {
+		return ""
+	}
+
+	var plain string
+	if errPlain := json.Unmarshal(body.Input, &plain); errPlain == nil {
+		return plain
+	}
+
+	var items []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if errItems := json.Unmarshal(body.Input, &items); errItems != nil {
+		return ""
+	}
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		if item.Role != "" && item.Role != "user" {
+			continue
+		}
+		if text := textFromContent(item.Content); strings.TrimSpace(text) != "" {
 			return text
 		}
 	}
@@ -203,7 +245,8 @@ func textFromContent(raw json.RawMessage) string {
 	}
 	var builder strings.Builder
 	for _, block := range blocks {
-		if block.Type != "text" {
+		// "text" is the Messages shape; "input_text" is the Responses shape.
+		if block.Type != "text" && block.Type != "input_text" {
 			continue
 		}
 		if builder.Len() > 0 {

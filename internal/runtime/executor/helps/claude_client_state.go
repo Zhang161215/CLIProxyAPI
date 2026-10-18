@@ -140,5 +140,19 @@ func ApplyClaudeCallerDeviceHeaders(r *http.Request, incoming http.Header, cfg *
 	ensure("X-Stainless-Package-Version", profile.PackageVersion)
 	ensure("X-Stainless-Os", mapStainlessOS())
 	ensure("X-Stainless-Arch", mapStainlessArch())
-	ensure("User-Agent", profile.UserAgent)
+
+	// The User-Agent is the one header a caller can easily fabricate, so it is
+	// the one that must be checked before it is trusted. Preserving a plausible
+	// claude-cli string keeps an unrecognized genuine client intact; anything
+	// else falls back to the canonical value instead of forwarding garbage
+	// upstream under this credential's name.
+	current := strings.TrimSpace(r.Header.Get("User-Agent"))
+	if current == "" {
+		current = strings.TrimSpace(incoming.Get("User-Agent"))
+	}
+	if current != "" && plausibleClaudeCodeUserAgent(current, cfg) {
+		r.Header.Set("User-Agent", current)
+		return
+	}
+	r.Header.Set("User-Agent", profile.UserAgent)
 }

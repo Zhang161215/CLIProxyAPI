@@ -2,6 +2,7 @@ package helps
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -85,5 +86,28 @@ func TestDetectClientStateTrustsCallerConfirmation(t *testing.T) {
 	state := DetectClientState(headers, []byte(`{}`), false, true, nil)
 	if state != ClaudeClientConfirmed {
 		t.Fatalf("state = %s, want confirmed", state)
+	}
+}
+
+// The caller's User-Agent is the cheapest header to fabricate, so the passthrough
+// path must only keep a plausible one.
+func TestApplyClaudeCallerDeviceHeadersValidatesUserAgent(t *testing.T) {
+	cases := map[string]string{
+		"claude-cli/2.1.280 (external, future-surface)": "claude-cli/2.1.280 (external, future-surface)",
+		"curl/8.0":                             "claude-cli/2.1.280 (external, cli)",
+		"":                                     "claude-cli/2.1.280 (external, cli)",
+		"claude-cli/0.0.1 (external, ancient)": "claude-cli/2.1.280 (external, cli)",
+	}
+	for input, want := range cases {
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		incoming := http.Header{}
+		if input != "" {
+			request.Header.Set("User-Agent", input)
+			incoming.Set("User-Agent", input)
+		}
+		ApplyClaudeCallerDeviceHeaders(request, incoming, nil)
+		if got := request.Header.Get("User-Agent"); got != want {
+			t.Fatalf("User-Agent(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

@@ -101,8 +101,12 @@ func NormalizeDeviceIDPool(raw any) []string {
 		return nil
 	}
 
-	deviceIDs := make([]string, 0, min(len(values), ClaudeDevicePoolSize))
-	seen := make(map[string]struct{}, ClaudeDevicePoolSize)
+	// Normalization keeps a pool as large as the operator configured, up to the
+	// hard cap. Truncating to the default here silently undid DevicePoolSize for
+	// every credential whose pool was read back from metadata.
+	limit := min(len(values), maxClaudeDevicePoolSize)
+	deviceIDs := make([]string, 0, limit)
+	seen := make(map[string]struct{}, limit)
 	for _, value := range values {
 		deviceID := strings.ToLower(strings.TrimSpace(value))
 		if !ValidDeviceID(deviceID) {
@@ -113,14 +117,16 @@ func NormalizeDeviceIDPool(raw any) []string {
 		}
 		seen[deviceID] = struct{}{}
 		deviceIDs = append(deviceIDs, deviceID)
-		if len(deviceIDs) == ClaudeDevicePoolSize {
+		if len(deviceIDs) == limit {
 			break
 		}
 	}
 	return deviceIDs
 }
 
-// HasCanonicalDeviceIDPool reports whether raw stores exactly one valid device ID.
+// HasCanonicalDeviceIDPool reports whether raw already stores a normalized,
+// valid pool. Any size within the cap qualifies: the canonical form is about
+// shape, not about a fixed length.
 func HasCanonicalDeviceIDPool(raw any) bool {
 	var values []string
 	switch typed := raw.(type) {
@@ -139,7 +145,17 @@ func HasCanonicalDeviceIDPool(raw any) bool {
 		return false
 	}
 	normalized := NormalizeDeviceIDPool(values)
-	return len(values) == ClaudeDevicePoolSize && len(normalized) == ClaudeDevicePoolSize && values[0] == normalized[0]
+	if len(normalized) == 0 || len(normalized) != len(values) {
+		return false
+	}
+	for index := range normalized {
+		if normalized[index] != values[index] {
+			return false
+		}
+	}
+	// Shape alone is not enough: a legacy pool of five is well-formed but not
+	// what the client presents, so it still needs migration.
+	return len(values) == DevicePoolSize()
 }
 
 // EnsureDeviceIDPool repairs or creates the single-device pool in credential metadata.
@@ -277,11 +293,22 @@ func ensureDeviceIDPoolLocked(metadata map[string]any) ([]string, bool, error) {
 	rawDeviceIDs := metadata[ClaudeDeviceIDsMetadataKey]
 	deviceIDs := NormalizeDeviceIDPool(rawDeviceIDs)
 	changed := !HasCanonicalDeviceIDPool(rawDeviceIDs)
-	seen := make(map[string]struct{}, ClaudeDevicePoolSize)
+
+	// The pool size is the configured size, defaulting to one. With the default
+	// this reproduces the upstream contract exactly: a legacy multi-slot pool is
+	// collapsed to a single device, which is what the real client presents. Only
+	// an explicit CPA_ANTIDETECT_DEVICE_POOL raises it, and then the pool is
+	// adjusted to that size.
+	target := DevicePoolSize()
+	if len(deviceIDs) > target {
+		deviceIDs = deviceIDs[:target]
+		changed = true
+	}
+	seen := make(map[string]struct{}, target)
 	for _, deviceID := range deviceIDs {
 		seen[deviceID] = struct{}{}
 	}
-	for len(deviceIDs) < ClaudeDevicePoolSize {
+	for len(deviceIDs) < target {
 		deviceID, errDeviceID := generateDeviceID()
 		if errDeviceID != nil {
 			return nil, false, errDeviceID
