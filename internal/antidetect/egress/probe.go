@@ -68,11 +68,11 @@ func (w *Watcher) CheckOnce(ctx context.Context, cfg Config) []Drift {
 		ctx = context.Background()
 	}
 
+	// A pool with an empty proxy URL is a direct exit: the host running this
+	// process is the exit. That is the common single-server deployment, and it
+	// still needs drift detection, so it is probed rather than skipped.
 	var drifts []Drift
 	for poolID, pool := range cfg.Pools {
-		if strings.TrimSpace(pool.ProxyURL) == "" {
-			continue
-		}
 		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		address, errProbe := w.probe(probeCtx, pool.ProxyURL)
 		cancel()
@@ -137,9 +137,14 @@ func HTTPProbe(echoURL string) ProbeFunc {
 		transport := &http.Transport{
 			DisableKeepAlives: true,
 		}
-		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-			transport.DialContext = contextDialer.DialContext
-		} else {
+		switch typed := dialer.(type) {
+		case nil:
+			// Direct: the process host is the exit.
+			direct := &net.Dialer{}
+			transport.DialContext = direct.DialContext
+		case proxy.ContextDialer:
+			transport.DialContext = typed.DialContext
+		default:
 			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			}

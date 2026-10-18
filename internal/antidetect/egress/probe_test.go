@@ -81,7 +81,9 @@ func TestWatcherIgnoresProbeFailure(t *testing.T) {
 	}
 }
 
-func TestWatcherSkipsPoolsWithoutProxy(t *testing.T) {
+// A pool without a proxy URL is a direct exit: the process host is the exit.
+// That is the single-server deployment, and it must still be probed.
+func TestWatcherProbesDirectExits(t *testing.T) {
 	probed := 0
 	probe := func(context.Context, string) (string, error) {
 		probed++
@@ -89,8 +91,16 @@ func TestWatcherSkipsPoolsWithoutProxy(t *testing.T) {
 	}
 	watcher := NewWatcher(probe, time.Minute, nil)
 	watcher.CheckOnce(context.Background(), Config{Pools: map[string]Pool{"direct": {}}})
-	if probed != 0 {
-		t.Fatalf("a pool without a proxy URL must not be probed, probed %d", probed)
+	if probed != 1 {
+		t.Fatalf("a direct exit must be probed once, probed %d", probed)
+	}
+
+	// And it must detect a change on that direct exit too.
+	watcher2 := NewWatcher(sequenceProbe("1.1.1.1", "2.2.2.2"), time.Minute, nil)
+	cfg := Config{Pools: map[string]Pool{"direct": {}}}
+	watcher2.CheckOnce(context.Background(), cfg)
+	if drifts := watcher2.CheckOnce(context.Background(), cfg); len(drifts) != 1 {
+		t.Fatalf("direct exit drift not reported: %v", drifts)
 	}
 }
 

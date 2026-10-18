@@ -36,7 +36,22 @@
 | `CPA_ANTIDETECT_EGRESS` | 见下 | 一证一出口的 JSON 策略 |
 | `CPA_ANTIDETECT_WINDOW_GATE` | 不设（开） | 排障时可设 `off` |
 
-出口策略示例：
+### 单机部署（1 服务器 = 1 CPA = 账号在该机注册授权）
+
+这是最常见也最干净的一种形态：**注册 IP = 授权 IP = 使用 IP**，没有任何跳变。此时：
+
+- **不要开 `enforce`**：只有一条出口，强制绑定没有收益，反而要求每个凭证都写 `egress_id`，漏一个就是 409
+- **但仍然建议配一个直连池**，用来开漂移检测（服务器换 IP 时能发现）：
+
+```json
+{"enforce": false, "pools": {"local": {"proxy_url": ""}}}
+```
+
+`proxy_url` 留空 = 直连出口 = 本机公网 IP。探测每 10 分钟一次，变化时记 `egress_drift`。
+
+- 多台服务器时：**一个账号只固定在一台**，不要在两台上轮换。
+
+出口策略示例（多机 / 多出口时）：
 
 ```bash
 export CPA_ANTIDETECT_EGRESS='{"enforce":true,"pools":{
