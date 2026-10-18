@@ -243,7 +243,7 @@ jobs:
           stage="stage-darwin-${arch}"
           mkdir -p "$stage"
           cp "out/cpa-darwin-${arch}" "out/cpa-postmortem-darwin-${arch}" "$stage/"
-          cp docs-deploy/README-Linux.md "$stage/README.md"
+          cp docs-deploy/README-macOS.md "$stage/README.md"
           ( cd "$stage" && shasum -a 256 cpa-* > SHA256SUMS.txt )
           tar -czf "cpa-darwin-${arch}.tar.gz" -C "$stage" .
 
