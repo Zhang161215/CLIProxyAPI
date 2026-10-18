@@ -197,9 +197,13 @@ func newClaudeCodeTLSConfigWithRoots(host string, sessionCache tls.ClientSession
 }
 
 // claudeCodeTLSClientHelloSpec reproduces the deterministic Node/OpenSSL
-// ClientHello emitted by Claude Code 2.1.220 on macOS arm64. Keep this spec in
-// sync with a fresh native capture whenever the advertised Claude Code version
-// changes.
+// ClientHello emitted by Claude Code on macOS arm64.
+// Last verified against a live 2.1.280 client on 2026-10-18: the cipher list
+// and the extension order of the first thirteen entries matched exactly. Padding and
+// pre_shared_key are context-dependent (padding depends on the hello length,
+// pre_shared_key only appears on resumption) and are therefore not expected on
+// every capture. Keep this spec in sync with a fresh native capture whenever
+// the advertised ClientHello provenance changes.
 func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 	return &tls.ClientHelloSpec{
 		CipherSuites: []uint16{

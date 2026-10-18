@@ -1571,9 +1571,14 @@ func applyClaudeHeadersWithNativeProfile(
 	}
 	applyTransportNegotiation()
 	// Confirmed Claude Code requests may contribute their real software profile.
-	// Unconfirmed clients always receive the CLI baseline instead of being
-	// allowed to populate or reuse another client's software profile.
-	if stabilizeDeviceProfile {
+	// Unconfirmed clients receive the CLI baseline instead of being allowed to
+	// populate or reuse another client's software profile. The exception is an
+	// unrecognized but plausibly genuine client: replacing its profile would
+	// fabricate a fingerprint where the caller already had a consistent one.
+	callerState := helps.DetectClientState(incomingHeaders, nil, false, confirmedClaudeCode, cfg)
+	if callerState == helps.ClaudeClientUnknown {
+		helps.ApplyClaudeCallerDeviceHeaders(r, incomingHeaders, cfg)
+	} else if stabilizeDeviceProfile {
 		if confirmedClaudeCode {
 			helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile)
 		} else {

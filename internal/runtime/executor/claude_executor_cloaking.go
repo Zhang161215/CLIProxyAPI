@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/audit"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -1680,6 +1681,25 @@ func applyCloakingInternal(
 	explicitCacheMode ...bool,
 ) ([]byte, bool, error) {
 	policy, settings := resolveClaudeWirePolicy(cfg, auth, apiKey, confirmedClaudeCode)
+	if policy.Cloak {
+		// Fail-safe before rewriting anything: a request that carries some
+		// Claude Code signals but does not satisfy every gate is more likely
+		// a genuine client this build does not recognize than an unrelated
+		// caller. Rewriting it replaces a real fingerprint with a synthetic
+		// one no client emits, so it is passed through untouched.
+		headers := resolveIncomingClaudeHeaders(ctx, helps.IncomingHeadersFromContext(ctx))
+		clientState := helps.DetectClientState(headers, payload, false, confirmedClaudeCode, cfg)
+		if !clientState.MayCloak() {
+			audit.Log(audit.Record{
+				Event:        "cloak_gate",
+				Decision:     audit.DecisionUnknown,
+				CredentialID: authCredentialID(auth),
+				ClientState:  clientState.String(),
+				Entrypoint:   strings.TrimSpace(headers.Get("User-Agent")),
+			})
+			policy.Cloak = false
+		}
+	}
 	if !policy.Cloak {
 		return payload, false, nil
 	}

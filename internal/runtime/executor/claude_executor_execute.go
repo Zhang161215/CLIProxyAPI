@@ -64,6 +64,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	// Refuse policy-violating content before any credential is selected: a
+	// safeguards action ends the account, and spending upstream quota on a
+	// request that will be refused makes that outcome more likely, not less.
+	if errContent := gateClaudeContent(auth, originalPayload); errContent != nil {
+		return resp, errContent
+	}
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
@@ -299,7 +305,23 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
+	// Verify the credential's exit binding before anything leaves: sharing an
+	// exit between credentials is what links them upstream.
+	if errWindow := checkClaudeWindow(auth); errWindow != nil {
+		return resp, errWindow
+	}
+	if errEgress := checkClaudeEgress(auth); errEgress != nil {
+		return resp, errEgress
+	}
+	// Pace this credential before the request leaves. Inter-request timing is
+	// one of the few signals a proxy cannot disguise with a better payload.
+	if errThrottle := awaitClaudeRateSlot(ctx, auth); errThrottle != nil {
+		return resp, errThrottle
+	}
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
+	if httpResp != nil {
+		observeClaudeWindow(auth, httpResp.Header)
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, wrapClaudeFastRequestError(fastRequest, 0, err)

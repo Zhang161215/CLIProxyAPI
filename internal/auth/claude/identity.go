@@ -2,17 +2,52 @@ package claude
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 const (
 	ClaudeDeviceIDsMetadataKey = "claude_device_ids"
-	ClaudeDevicePoolSize       = 1
-	claudeDeviceIDByteSize     = 32
+	// ClaudeDevicePoolSize is the default pool size. One device ID is what the
+	// upstream client itself uses; larger pools only make sense when a
+	// deployment multiplexes independent conversations onto one credential.
+	ClaudeDevicePoolSize = 1
+	// DevicePoolSizeEnv raises the pool size for new credentials. Existing
+	// credentials keep whatever pool they already have: resizing would rotate
+	// a device ID the upstream has already seen.
+	DevicePoolSizeEnv       = "CPA_ANTIDETECT_DEVICE_POOL"
+	maxClaudeDevicePoolSize = 8
+	claudeDeviceIDByteSize  = 32
 )
+
+// DevicePoolSize reports how many device IDs a newly created credential gets.
+func DevicePoolSize() int {
+	raw := strings.TrimSpace(os.Getenv(DevicePoolSizeEnv))
+	if raw == "" {
+		return ClaudeDevicePoolSize
+	}
+	size, errParse := strconv.Atoi(raw)
+	if errParse != nil || size < 1 || size > maxClaudeDevicePoolSize {
+		return ClaudeDevicePoolSize
+	}
+	return size
+}
+
+// deviceIndexForSession maps a session to a stable slot in the pool, so one
+// conversation keeps one device ID while separate conversations differ.
+func deviceIndexForSession(sessionID string, size int) int {
+	if size <= 1 {
+		return 0
+	}
+	sum := sha256.Sum256([]byte("cpa-device-session|" + sessionID))
+	return int(binary.BigEndian.Uint64(sum[:8]) % uint64(size))
+}
 
 // claudeDevicePoolMu guards every concurrent access to a Claude credential's
 // Auth.Metadata map, not just the device pool. A single Auth is shared by all
@@ -24,9 +59,10 @@ var claudeDevicePoolMu sync.Mutex
 
 // GenerateDeviceIDPool creates the fixed-size device pool stored with a Claude credential.
 func GenerateDeviceIDPool() ([]string, error) {
-	deviceIDs := make([]string, 0, ClaudeDevicePoolSize)
-	seen := make(map[string]struct{}, ClaudeDevicePoolSize)
-	for len(deviceIDs) < ClaudeDevicePoolSize {
+	size := DevicePoolSize()
+	deviceIDs := make([]string, 0, size)
+	seen := make(map[string]struct{}, size)
+	for len(deviceIDs) < size {
 		deviceID, errDeviceID := generateDeviceID()
 		if errDeviceID != nil {
 			return nil, errDeviceID
@@ -263,17 +299,22 @@ func ensureDeviceIDPoolLocked(metadata map[string]any) ([]string, bool, error) {
 	return append([]string(nil), deviceIDs...), changed, nil
 }
 
-// SelectDeviceID returns the credential's sole device ID after validating the conversation session.
+// SelectDeviceID returns the device ID for a conversation session.
+//
+// A single-entry pool always returns that entry, which is the upstream client's
+// own behaviour. Multi-entry pools map the session to a stable slot: rotating
+// per request would tell the upstream that one machine hosts unrelated
+// conversations.
 func SelectDeviceID(deviceIDs []string, sessionID string) (string, error) {
 	deviceIDs = NormalizeDeviceIDPool(deviceIDs)
-	if len(deviceIDs) != ClaudeDevicePoolSize {
-		return "", fmt.Errorf("select Claude device ID: device pool has %d entries, want %d", len(deviceIDs), ClaudeDevicePoolSize)
+	if len(deviceIDs) == 0 {
+		return "", fmt.Errorf("select Claude device ID: device pool is empty")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("select Claude device ID: session ID is empty")
 	}
-	return deviceIDs[0], nil
+	return deviceIDs[deviceIndexForSession(sessionID, len(deviceIDs))], nil
 }
 
 // ValidDeviceID reports whether a value matches Claude Code's lowercase 64-hex device format.

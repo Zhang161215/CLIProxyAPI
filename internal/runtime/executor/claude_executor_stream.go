@@ -67,6 +67,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	// Refuse policy-violating content before any credential is selected: a
+	// safeguards action ends the account, and spending upstream quota on a
+	// request that will be refused makes that outcome more likely, not less.
+	if errContent := gateClaudeContent(auth, originalPayload); errContent != nil {
+		return nil, errContent
+	}
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
@@ -291,7 +297,19 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
+	if errWindow := checkClaudeWindow(auth); errWindow != nil {
+		return nil, errWindow
+	}
+	if errEgress := checkClaudeEgress(auth); errEgress != nil {
+		return nil, errEgress
+	}
+	if errThrottle := awaitClaudeRateSlot(ctx, auth); errThrottle != nil {
+		return nil, errThrottle
+	}
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
+	if httpResp != nil {
+		observeClaudeWindow(auth, httpResp.Header)
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, wrapClaudeFastRequestError(fastRequest, 0, err)

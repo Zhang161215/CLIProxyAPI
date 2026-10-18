@@ -19,6 +19,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/versionguard"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cmd"
@@ -642,6 +643,14 @@ func main() {
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)
+
+	// Refuse to serve an internally inconsistent Claude identity. A newer
+	// User-Agent over an older handshake advertises a client version that never
+	// shipped, which is both observable per request and stable across a session.
+	if errGuard := versionguard.Check(versionguard.Canonical(), versionguard.OptionsFromEnv()); errGuard != nil {
+		log.Errorf("refusing to start: %v", errGuard)
+		os.Exit(1)
+	}
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
