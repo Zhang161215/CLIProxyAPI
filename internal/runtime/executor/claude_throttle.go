@@ -123,6 +123,7 @@ func awaitClaudeRateSlot(ctx context.Context, auth *cliproxyauth.Auth) error {
 			wait = time.Millisecond
 		}
 		if time.Now().Add(wait).After(deadline) {
+			recordClaudePace(auth)
 			audit.Log(audit.Record{
 				Event:        "pacing",
 				Decision:     audit.DecisionBlocked,

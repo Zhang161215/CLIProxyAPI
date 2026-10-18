@@ -64,6 +64,7 @@ func gateClaudeContent(auth *cliproxyauth.Auth, payload []byte) error {
 	if !verdict.Blocked {
 		return nil
 	}
+	recordClaudeBlock(auth, verdict.RuleID)
 	audit.Log(audit.Record{
 		Event:        "content_gate",
 		Decision:     audit.DecisionBlocked,

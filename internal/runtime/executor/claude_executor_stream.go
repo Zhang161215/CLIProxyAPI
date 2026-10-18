@@ -73,6 +73,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errContent := gateClaudeContent(auth, originalPayload); errContent != nil {
 		return nil, errContent
 	}
+	observeClaudeRequest(ctx, auth)
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""

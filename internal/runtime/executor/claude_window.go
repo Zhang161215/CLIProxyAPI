@@ -92,6 +92,9 @@ func observeClaudeWindow(auth *cliproxyauth.Auth, headers http.Header) {
 	}
 	credentialID := authCredentialID(auth)
 	claudeWindows().Observe(credentialID, snapshots)
+	for _, snapshot := range snapshots {
+		recordClaudeUtilization(auth, snapshot.Utilization)
+	}
 
 	for _, snapshot := range snapshots {
 		state := window.Evaluate(snapshot, now)

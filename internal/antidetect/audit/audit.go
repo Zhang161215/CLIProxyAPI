@@ -42,6 +42,8 @@ type Record struct {
 	Category     string
 	Excerpt      string
 	Detail       string
+	// Summary carries a compact, parseable profile line for post-mortems.
+	Summary string
 }
 
 // ID hashes a credential identifier for correlation without disclosure.
@@ -82,6 +84,7 @@ func Log(record Record) {
 		{"category", record.Category},
 		{"excerpt", record.Excerpt},
 		{"detail", record.Detail},
+		{"summary", record.Summary},
 	}
 	for _, item := range optional {
 		if item.value != "" {
