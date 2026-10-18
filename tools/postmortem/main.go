@@ -35,6 +35,7 @@ type profile struct {
 	Allowed    int
 	Blocked    int
 	Paced      int
+	RateLimit  int
 	IPs        int
 	UAs        int
 	Entry      int
@@ -212,6 +213,7 @@ func parseProfile(fields map[string]string, at time.Time) profile {
 		Allowed:    atoi(fields["summary"], "allowed"),
 		Blocked:    atoi(fields["summary"], "blocked"),
 		Paced:      atoi(fields["summary"], "paced"),
+		RateLimit:  atoi(fields["summary"], "ratelimited"),
 		IPs:        atoi(fields["summary"], "ips"),
 		UAs:        atoi(fields["summary"], "uas"),
 		Entry:      atoi(fields["summary"], "entry"),
@@ -275,12 +277,13 @@ func report(credential string, since time.Duration, profiles []profile, events [
 
 	// Union the profile windows: a credential seen for days has many windows,
 	// and the question is what happened across all of them.
-	var totalRequests, totalBlocked, totalPaced, maxIPs, maxUAs, maxEntry, maxSessions int
+	var totalRequests, totalBlocked, totalPaced, totalRateLimit, maxIPs, maxUAs, maxEntry, maxSessions int
 	var maxUtil float64
 	for _, item := range profiles {
 		totalRequests += item.Requests
 		totalBlocked += item.Blocked
 		totalPaced += item.Paced
+		totalRateLimit += item.RateLimit
 		maxIPs = maxInt(maxIPs, item.IPs)
 		maxUAs = maxInt(maxUAs, item.UAs)
 		maxEntry = maxInt(maxEntry, item.Entry)
@@ -294,6 +297,7 @@ func report(credential string, since time.Duration, profiles []profile, events [
 	fmt.Printf("  requests       : %d\n", totalRequests)
 	fmt.Printf("  content blocks : %d\n", totalBlocked)
 	fmt.Printf("  paced          : %d\n", totalPaced)
+	fmt.Printf("  upstream 429s  : %d\n", totalRateLimit)
 	fmt.Printf("  max exits      : %d\n", maxIPs)
 	fmt.Printf("  max UAs        : %d\n", maxUAs)
 	fmt.Printf("  max entrypoints: %d\n", maxEntry)
@@ -302,7 +306,7 @@ func report(credential string, since time.Duration, profiles []profile, events [
 	fmt.Println()
 
 	fmt.Println("signals (ordered by frequency in observed bans)")
-	signals := signalsFrom(totalRequests, totalBlocked, maxIPs, maxUAs, maxEntry, maxUtil)
+	signals := signalsFrom(totalRequests, totalBlocked, totalRateLimit, maxIPs, maxUAs, maxEntry, maxUtil)
 	if len(signals) == 0 {
 		fmt.Println("  none: the measurements this fork takes were all normal")
 	}
@@ -348,7 +352,7 @@ func report(credential string, since time.Duration, profiles []profile, events [
 	}
 }
 
-func signalsFrom(requests, blocked, ips, uas, entry int, utilization float64) []string {
+func signalsFrom(requests, blocked, rateLimited, ips, uas, entry int, utilization float64) []string {
 	var signals []string
 	if ips > 1 {
 		signals = append(signals, fmt.Sprintf(
@@ -361,6 +365,10 @@ func signalsFrom(requests, blocked, ips, uas, entry int, utilization float64) []
 	if entry > 1 {
 		signals = append(signals, fmt.Sprintf(
 			"mixed entrypoints: up to %d distinct entrypoints", entry))
+	}
+	if rateLimited > 0 {
+		signals = append(signals, fmt.Sprintf(
+			"upstream rate limits: %d (a 429 streak often precedes a revocation)", rateLimited))
 	}
 	if blocked > 0 {
 		signals = append(signals, fmt.Sprintf(

@@ -1,10 +1,14 @@
 // Package egress enforces one outbound path per credential.
 //
-// Sharing an exit between credentials is the cheapest way to link them: the
-// upstream sees the same address serving unrelated conversations, which is the
-// same shape as one account used by several people. Binding is enforced before
-// a request is scheduled, and it fails closed: an unbound credential under
-// enforcement refuses to run rather than quietly going direct.
+// What matters to the upstream is not whether an address is residential. Field
+// reports through late 2026 point at three other properties: how many exits one
+// account uses, whether the exit's region jumps, and how many accounts share a
+// single exit. A datacenter address used steadily by one account has stayed up
+// for months; a residential address shared by many has not. Binding therefore
+// targets stability and exclusivity, not purity.
+//
+// Enforcement fails closed: an unbound credential refuses to run rather than
+// quietly going direct, because the direct path is the one nobody is watching.
 package egress
 
 import (

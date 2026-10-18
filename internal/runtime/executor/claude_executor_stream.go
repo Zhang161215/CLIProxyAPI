@@ -73,6 +73,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errContent := gateClaudeContent(auth, originalPayload); errContent != nil {
 		return nil, errContent
 	}
+	recordClaudeFingerprint(auth, originalPayload)
 	observeClaudeRequest(ctx, auth)
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
@@ -309,6 +310,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
 	if httpResp != nil {
+		if httpResp.StatusCode == http.StatusTooManyRequests {
+			recordClaudeRateLimit(auth)
+		}
 		observeClaudeWindow(auth, httpResp.Header)
 	}
 	if err != nil {

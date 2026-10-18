@@ -15,6 +15,43 @@
 
 ---
 
+## [0.3.0] — 2026-10-18 · 按外部情报补齐四个维度
+
+依据见 [INTEL-2026-10.md](INTEL-2026-10.md)。
+
+### 新增
+
+**T-13 一号一时区** · 基线已支持，本次补文档
+
+- 优先级：凭证 attributes `timezone` → 凭证 metadata → `claude-header-defaults.timezone`
+- 影响 currentDate 与 Environment 块；`DEPLOY.md` 已写明配置方式
+
+**T-14 429 观察期信号** · `monitor` + `postmortem`
+
+- 上游返回 429 时记 `RateLimited`，即使随后重试成功也计数
+- 画像 `summary` 增加 `ratelimited=`；报告新增信号「upstream rate limits: N（429 连续出现常见于封禁前）」
+- 依据：同批反代号里只有反复 429 的那个号几天后封
+
+**T-15 内容指纹聚类** · `internal/antidetect/fingerprint/`
+
+- 从请求体提取**工作目录路径、git remote、提交者邮箱**，**只存 sha256 前 12 位**
+- ssh 与 https 两种 remote 写法归一化后同指纹
+- 跨凭证碰撞时记 `content_fingerprint / collision`，**只告警不阻断**，同一碰撞只报一次
+- 排除 `git@host` 这种伪邮箱
+- 依据：源码级遥测审计显示 CLI 每请求携带路径与 git 提交者；另有"封禁沿项目传播"的个案
+- 验证：`fingerprint_test.go`（10 条）+ `claude_fingerprint_test.go`（3 条）
+
+### 变更
+
+- **出口评价口径**：从"IP 纯净度"改为「出口数量 / 地区一致性 / 共享度」。`egress` 包注释与 `DEPLOY.md` 同步
+- `audit` 增加 `DecisionCollision`
+
+### 说明
+
+T-16 是纯文档调整，没有代码逻辑变化：社区证据里机房 IP 长期稳定与住宅 IP 被共用后封禁并存，继续按"纯净度"选代理属于把钱花错地方。
+
+---
+
 ## [0.2.1] — 2026-10-18 · 防静默失效
 
 ### 新增

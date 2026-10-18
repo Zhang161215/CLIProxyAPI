@@ -26,10 +26,11 @@ const maxTrackedValues = 32
 type Profile struct {
 	CredentialID string
 
-	Requests int64
-	Allowed  int64
-	Blocked  int64
-	Paced    int64
+	Requests    int64
+	Allowed     int64
+	Blocked     int64
+	Paced       int64
+	RateLimited int64
 
 	ClientIPs   map[string]struct{}
 	UserAgents  map[string]struct{}
@@ -52,6 +53,7 @@ type Snapshot struct {
 	Allowed        int64
 	Blocked        int64
 	Paced          int64
+	RateLimited    int64
 	DistinctIPs    int
 	DistinctUAs    int
 	DistinctEntry  int
@@ -163,6 +165,23 @@ func (r *Registry) Pace(credentialID string) {
 	profile.LastSeen = r.now()
 }
 
+// RateLimit records an upstream 429 for this credential.
+//
+// Rate limits are counted separately from pacing: pacing is our own decision,
+// while a 429 is the upstream's. A credential that keeps collecting 429s is
+// being watched even when the calls eventually succeed.
+func (r *Registry) RateLimit(credentialID string) {
+	if r == nil || credentialID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	profile := r.profile(credentialID)
+	profile.RateLimited++
+	profile.LastSeen = r.now()
+}
+
 // Utilization records the highest quota-window utilization seen.
 func (r *Registry) Utilization(credentialID string, utilization float64) {
 	if r == nil || credentialID == "" {
@@ -198,6 +217,7 @@ func (r *Registry) Snapshots() []Snapshot {
 			Allowed:        profile.Allowed,
 			Blocked:        profile.Blocked,
 			Paced:          profile.Paced,
+			RateLimited:    profile.RateLimited,
 			DistinctIPs:    len(profile.ClientIPs),
 			DistinctUAs:    len(profile.UserAgents),
 			DistinctEntry:  len(profile.Entrypoints),
@@ -238,6 +258,10 @@ func (s Snapshot) RiskSignals() []string {
 	}
 	if s.DistinctEntry > 1 {
 		signals = append(signals, "mixed entrypoints: "+strconv.Itoa(s.DistinctEntry)+" distinct entrypoints")
+	}
+	if s.RateLimited > 0 {
+		signals = append(signals, "upstream rate limits: "+strconv.FormatInt(s.RateLimited, 10)+
+			" (a 429 streak often precedes a revocation)")
 	}
 	if s.Blocked > 0 {
 		signals = append(signals, "content blocks: "+strconv.FormatInt(s.Blocked, 10))

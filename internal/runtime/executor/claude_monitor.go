@@ -67,8 +67,8 @@ func flushProfiles() {
 
 // formatProfile renders one profile as key=value pairs for later parsing.
 func formatProfile(snapshot monitor.Snapshot) string {
-	return fmt.Sprintf("requests=%d allowed=%d blocked=%d paced=%d ips=%d uas=%d entry=%d sessions=%d max_util=%.2f",
-		snapshot.Requests, snapshot.Allowed, snapshot.Blocked, snapshot.Paced,
+	return fmt.Sprintf("requests=%d allowed=%d blocked=%d paced=%d ratelimited=%d ips=%d uas=%d entry=%d sessions=%d max_util=%.2f",
+		snapshot.Requests, snapshot.Allowed, snapshot.Blocked, snapshot.Paced, snapshot.RateLimited,
 		snapshot.DistinctIPs, snapshot.DistinctUAs, snapshot.DistinctEntry, snapshot.DistinctSess,
 		snapshot.MaxUtilization)
 }
@@ -136,6 +136,15 @@ func recordClaudeBlock(auth *cliproxyauth.Auth, rule string) {
 func recordClaudePace(auth *cliproxyauth.Auth) {
 	if credentialID := authCredentialID(auth); credentialID != "" {
 		claudeProfiles().Pace(credentialID)
+	}
+}
+
+// recordClaudeRateLimit notes that the upstream answered 429 for this
+// credential. The call may still succeed after a retry; the count is about the
+// credential being watched, not about a failed request.
+func recordClaudeRateLimit(auth *cliproxyauth.Auth) {
+	if credentialID := authCredentialID(auth); credentialID != "" {
+		claudeProfiles().RateLimit(credentialID)
 	}
 }
 

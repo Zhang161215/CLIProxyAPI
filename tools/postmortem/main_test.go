@@ -77,11 +77,11 @@ func TestFilterByCredential(t *testing.T) {
 }
 
 func TestSignalsFromFlagsTheSharingShape(t *testing.T) {
-	signals := signalsFrom(20, 2, 3, 2, 2, 0.97)
-	if len(signals) != 5 {
+	signals := signalsFrom(20, 2, 1, 3, 2, 2, 0.97)
+	if len(signals) != 6 {
 		t.Fatalf("signals = %v, want 5", signals)
 	}
-	if got := signalsFrom(20, 0, 1, 1, 1, 0.2); len(got) != 0 {
+	if got := signalsFrom(20, 0, 0, 1, 1, 1, 0.2); len(got) != 0 {
 		t.Fatalf("a clean shape produced signals: %v", got)
 	}
 }

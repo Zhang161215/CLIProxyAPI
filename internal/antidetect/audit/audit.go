@@ -26,6 +26,8 @@ const (
 	DecisionAccepted Decision = "accepted"
 	// DecisionMissing means an expected signal never arrived.
 	DecisionMissing Decision = "missing"
+	// DecisionCollision means two credentials look like the same machine.
+	DecisionCollision Decision = "collision"
 )
 
 // Record is one auditable decision.
