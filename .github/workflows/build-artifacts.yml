@@ -1,9 +1,19 @@
 name: antidetect build
 
 # Builds downloadable binaries for every platform this fork supports.
-# Kept separate from upstream's release.yaml, which is tag-driven and carries a
-# much larger matrix (plugins, FreeBSD, generated release notes). This workflow
-# answers one question: does the current main build, and where can I download it.
+#
+# Two Linux variants are produced on purpose:
+#   cpa-linux-<arch>            CGO_ENABLED=1, dynamic, plugins work
+#   cpa-linux-<arch>-no-plugin  CGO_ENABLED=0, static, musl/OpenWrt friendly
+#
+# The split exists because the dynamic library plugin loader is gated on cgo
+# (internal/pluginhost/loader_unix.go is `//go:build cgo && (linux||darwin||
+# freebsd)`). A static Linux build silently falls back to loader_unsupported.go
+# and every plugin fails to load with "requires cgo on this platform".
+#
+# Upstream builds the cgo variant inside manylinux2014 so the result only needs
+# GLIBC 2.17 or older. This workflow does the same and fails the job when a
+# newer symbol sneaks in.
 
 on:
   workflow_dispatch:
@@ -49,19 +59,93 @@ jobs:
       - name: Test
         run: go test ./...
 
-  build:
+  # cgo build inside manylinux2014: plugins load, GLIBC stays at 2.17.
+  build-linux-plugin:
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goarch: amd64, image: quay.io/pypa/manylinux2014_x86_64, runner: ubuntu-latest }
+          - { goarch: arm64, image: quay.io/pypa/manylinux2014_aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Build inside manylinux2014
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          MANYLINUX_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          commit="$(git rev-parse --short HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p out
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e GO_VERSION -e GOARCH -e VERSION="${version}-antidetect" -e COMMIT="$commit" -e BUILT="$built" \
+            "$MANYLINUX_IMAGE" \
+            bash -euo pipefail -c '
+              go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+              curl -fsSL "https://go.dev/dl/${go_archive}" -o "/tmp/${go_archive}"
+              rm -rf /usr/local/go && tar -C /usr/local -xzf "/tmp/${go_archive}"
+              export PATH="/usr/local/go/bin:${PATH}"
+
+              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false -trimpath \
+                -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILT}" \
+                -o "out/cpa-linux-${GOARCH}" ./cmd/server
+              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false -trimpath \
+                -ldflags "-s -w" -o "out/cpa-postmortem-linux-${GOARCH}" ./tools/postmortem
+
+              # The cgo build must be dynamic: a static result means the plugin
+              # loader was compiled out, which is the exact failure this job exists
+              # to prevent.
+              if file "out/cpa-linux-${GOARCH}" | grep -q "statically linked"; then
+                echo "cpa-linux-${GOARCH} is statically linked; the plugin loader would be missing" >&2
+                exit 1
+              fi
+
+              glibc_versions="$(readelf --version-info "out/cpa-linux-${GOARCH}" \
+                | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              max_glibc="$(printf "%s\n" "${glibc_versions}" | sort -V | tail -n 1)"
+              echo "max GLIBC requirement: ${max_glibc}"
+              if [[ "$(printf "2.17\n%s\n" "${max_glibc}" | sort -V | tail -n 1)" != "2.17" ]]; then
+                echo "requires GLIBC_${max_glibc}, expected 2.17 or older" >&2
+                exit 1
+              fi
+            '
+
+      - name: Package
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          stage="stage-linux-${GOARCH}"
+          mkdir -p "$stage"
+          cp "out/cpa-linux-${GOARCH}" "out/cpa-postmortem-linux-${GOARCH}" "$stage/"
+          cp docs-deploy/README-Linux.md "$stage/README.md" 2>/dev/null || true
+          ( cd "$stage" && sha256sum * > SHA256SUMS.txt )
+          tar -czf "cpa-linux-${GOARCH}.tar.gz" -C "$stage" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpa-linux-${{ matrix.goarch }}
+          path: cpa-linux-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # Static build for musl and old systems. No plugins, by construction.
+  build-linux-static:
     needs: verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { goos: linux,   goarch: amd64, asset: cpa-linux-amd64 }
-          - { goos: linux,   goarch: arm64, asset: cpa-linux-arm64 }
-          - { goos: windows, goarch: amd64, asset: cpa-windows-amd64.exe }
-          - { goos: windows, goarch: arm64, asset: cpa-windows-arm64.exe }
-          - { goos: darwin,  goarch: arm64, asset: cpa-darwin-arm64 }
-          - { goos: darwin,  goarch: amd64, asset: cpa-darwin-amd64 }
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,9 +156,117 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build server
+      - name: Build static
         env:
-          GOOS: ${{ matrix.goos }}
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          commit="$(git rev-parse --short HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p out
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${version}-antidetect-noplugin -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -o "out/cpa-linux-${{ matrix.goarch }}-no-plugin" ./cmd/server
+          go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-linux-${{ matrix.goarch }}-no-plugin" ./tools/postmortem
+          if ! file "out/cpa-linux-${{ matrix.goarch }}-no-plugin" | grep -q "statically linked"; then
+            echo "the no-plugin build must be static" >&2
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          arch="${{ matrix.goarch }}"
+          stage="stage-linux-${arch}-no-plugin"
+          mkdir -p "$stage"
+          cp "out/cpa-linux-${arch}-no-plugin" "out/cpa-postmortem-linux-${arch}-no-plugin" "$stage/"
+          cp docs-deploy/README-Linux.md "$stage/README.md" 2>/dev/null || true
+          ( cd "$stage" && sha256sum * > SHA256SUMS.txt )
+          tar -czf "cpa-linux-${arch}-no-plugin.tar.gz" -C "$stage" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpa-linux-${{ matrix.goarch }}-no-plugin
+          path: cpa-linux-${{ matrix.goarch }}-no-plugin.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # macOS ships the cgo build too: the same loader gate applies on darwin.
+  build-darwin:
+    needs: verify
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          commit="$(git rev-parse --short HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p out
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${version}-antidetect -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -o "out/cpa-darwin-${{ matrix.goarch }}" ./cmd/server
+          go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-darwin-${{ matrix.goarch }}" ./tools/postmortem
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          arch="${{ matrix.goarch }}"
+          stage="stage-darwin-${arch}"
+          mkdir -p "$stage"
+          cp "out/cpa-darwin-${arch}" "out/cpa-postmortem-darwin-${arch}" "$stage/"
+          cp docs-deploy/README-Linux.md "$stage/README.md"
+          ( cd "$stage" && shasum -a 256 cpa-* > SHA256SUMS.txt )
+          tar -czf "cpa-darwin-${arch}.tar.gz" -C "$stage" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpa-darwin-${{ matrix.goarch }}
+          path: cpa-darwin-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # Windows loads plugins through LoadLibrary, so cgo is not required.
+  build-windows:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: windows
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
@@ -85,26 +277,23 @@ jobs:
           mkdir -p out
           go build -trimpath \
             -ldflags "-s -w -X main.Version=${version}-antidetect -X main.Commit=${commit} -X main.BuildDate=${built}" \
-            -o "out/${{ matrix.asset }}" ./cmd/server
+            -o "out/cpa-windows-${{ matrix.goarch }}.exe" ./cmd/server
+          go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-windows-${{ matrix.goarch }}.exe" ./tools/postmortem
 
-      - name: Build postmortem tool
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+      - name: Package
         run: |
           set -euo pipefail
-          tool="cpa-postmortem-${{ matrix.goos }}-${{ matrix.goarch }}"
-          case "${{ matrix.goos }}" in
-            windows) tool="${tool}.exe" ;;
-          esac
-          go build -trimpath -ldflags "-s -w" -o "out/${tool}" ./tools/postmortem
-          ( cd out && sha256sum * > SHA256SUMS.txt )
+          arch="${{ matrix.goarch }}"
+          stage="stage-windows-${arch}"
+          mkdir -p "$stage"
+          cp "out/cpa-windows-${arch}.exe" "out/cpa-postmortem-windows-${arch}.exe" "$stage/"
+          cp docs-deploy/README-Windows.md "$stage/README.md"
+          ( cd "$stage" && sha256sum * > SHA256SUMS.txt )
+          cd "$stage" && zip -q "../cpa-windows-${arch}.zip" *
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: out/*
+          name: cpa-windows-${{ matrix.goarch }}
+          path: cpa-windows-${{ matrix.goarch }}.zip
           if-no-files-found: error
           retention-days: 30
