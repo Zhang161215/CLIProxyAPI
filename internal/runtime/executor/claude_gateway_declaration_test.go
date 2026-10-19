@@ -23,7 +23,7 @@ func TestGatewayHeadersDroppedByMeaning(t *testing.T) {
 	src.Set("x-claude-code-session-id", "keep-me")
 
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, true)
+	copyClaudeCallerFingerprintHeaders(dst, src, true, false)
 
 	for _, name := range cases {
 		if got := dst.Get(name); got != "" {
@@ -41,7 +41,7 @@ func TestNonGatewayHeadersSurvive(t *testing.T) {
 	src.Set("x-stainless-lang", "js")
 	src.Set("anthropic-version", "2023-06-01")
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, true)
+	copyClaudeCallerFingerprintHeaders(dst, src, true, false)
 	if dst.Get("x-stainless-lang") != "js" || dst.Get("anthropic-version") != "2023-06-01" {
 		t.Fatalf("ordinary headers were dropped: %v", dst)
 	}

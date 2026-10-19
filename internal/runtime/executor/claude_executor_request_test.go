@@ -12,7 +12,7 @@ func TestCopyClaudeCallerFingerprintHeadersDropsVersionGatedHeaders(t *testing.T
 	src.Set("x-claude-code-wiggly-dove", "sig=abc")
 	src.Set("x-claude-code-session-id", "session-1")
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, true)
+	copyClaudeCallerFingerprintHeaders(dst, src, true, false)
 	if got := dst.Get("x-claude-code-wiggly-dove"); got != "" {
 		t.Fatalf("version-gated header was forwarded: %q", got)
 	}

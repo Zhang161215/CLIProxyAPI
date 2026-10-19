@@ -23,7 +23,7 @@ func TestForwardedHeadersCoverTheCapturedSet(t *testing.T) {
 		src.Set(name, "v")
 	}
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, true)
+	copyClaudeCallerFingerprintHeaders(dst, src, true, false)
 	for _, name := range captured {
 		if dst.Get(name) != "v" {
 			t.Fatalf("captured header %q was dropped", name)
@@ -36,7 +36,7 @@ func TestUnknownClaudeCodeHeaderIsDropped(t *testing.T) {
 	src.Set("x-claude-code-something-new", "payload")
 	src.Set("x-claude-code-session-id", "keep")
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, true)
+	copyClaudeCallerFingerprintHeaders(dst, src, true, false)
 	if got := dst.Get("x-claude-code-something-new"); got != "" {
 		t.Fatalf("unreviewed header forwarded: %q", got)
 	}
@@ -52,7 +52,7 @@ func TestUnconfirmedCallerCannotInjectClaudeHeaders(t *testing.T) {
 	src.Set("x-claude-code-session-id", "injected")
 	src.Set("x-stainless-lang", "js")
 	dst := http.Header{}
-	copyClaudeCallerFingerprintHeaders(dst, src, false)
+	copyClaudeCallerFingerprintHeaders(dst, src, false, false)
 	if got := dst.Get("x-claude-code-session-id"); got != "" {
 		t.Fatalf("unconfirmed caller injected an identity header: %q", got)
 	}
