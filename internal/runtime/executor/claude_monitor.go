@@ -67,10 +67,10 @@ func flushProfiles() {
 
 // formatProfile renders one profile as key=value pairs for later parsing.
 func formatProfile(snapshot monitor.Snapshot) string {
-	return fmt.Sprintf("requests=%d allowed=%d blocked=%d paced=%d ratelimited=%d ips=%d uas=%d entry=%d sessions=%d max_util=%.2f",
-		snapshot.Requests, snapshot.Allowed, snapshot.Blocked, snapshot.Paced, snapshot.RateLimited,
-		snapshot.DistinctIPs, snapshot.DistinctUAs, snapshot.DistinctEntry, snapshot.DistinctSess,
-		snapshot.MaxUtilization)
+	return fmt.Sprintf("requests=%d allowed=%d blocked=%d paced=%d pace_rejected=%d ratelimited=%d ips=%d uas=%d entry=%d sessions=%d max_util=%.2f",
+		snapshot.Requests, snapshot.Allowed, snapshot.Blocked, snapshot.Paced, snapshot.PaceRejected,
+		snapshot.RateLimited, snapshot.DistinctIPs, snapshot.DistinctUAs, snapshot.DistinctEntry,
+		snapshot.DistinctSess, snapshot.MaxUtilization)
 }
 
 // clientIPFromContext returns the downstream address recorded by gin, if any.
@@ -136,6 +136,12 @@ func recordClaudeBlock(auth *cliproxyauth.Auth, rule string) {
 func recordClaudePace(auth *cliproxyauth.Auth) {
 	if credentialID := authCredentialID(auth); credentialID != "" {
 		claudeProfiles().Pace(credentialID)
+	}
+}
+
+func recordClaudePaceRejected(auth *cliproxyauth.Auth) {
+	if credentialID := authCredentialID(auth); credentialID != "" {
+		claudeProfiles().PaceRejected(credentialID)
 	}
 }
 

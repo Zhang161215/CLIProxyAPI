@@ -114,16 +114,22 @@ func awaitClaudeRateSlot(ctx context.Context, auth *cliproxyauth.Auth) error {
 	key := throttleKey(auth)
 
 	deadline := time.Now().Add(maxThrottleWait())
+	waited := false
 	for {
 		allowed, wait := limiter.Allow(key)
 		if allowed {
+			if waited {
+				// The slot was granted only after waiting: that is pacing in the
+				// ordinary sense and belongs in the profile.
+				recordClaudePace(auth)
+			}
 			return nil
 		}
 		if wait <= 0 {
 			wait = time.Millisecond
 		}
 		if time.Now().Add(wait).After(deadline) {
-			recordClaudePace(auth)
+			recordClaudePaceRejected(auth)
 			audit.Log(audit.Record{
 				Event:        "pacing",
 				Decision:     audit.DecisionBlocked,
@@ -136,6 +142,7 @@ func awaitClaudeRateSlot(ctx context.Context, auth *cliproxyauth.Auth) error {
 				retryAfter: &wait,
 			}
 		}
+		waited = true
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():

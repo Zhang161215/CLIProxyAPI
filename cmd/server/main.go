@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
@@ -651,6 +652,11 @@ func main() {
 		log.Errorf("refusing to start: %v", errGuard)
 		os.Exit(1)
 	}
+	// Print the switches actually in effect. On Windows a CPA_ANTIDETECT_*
+	// variable set in a scope the service never sees looks exactly like a
+	// variable that was never set, and the only other way to tell the
+	// difference is to run traffic and read the profile counters.
+	log.Infof("antidetect: options %s", executor.AntidetectOptionsSummary())
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)

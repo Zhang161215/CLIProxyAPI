@@ -31,6 +31,43 @@
 
 ---
 
+## [0.5.3] — 2026-10-19 · 让开关"生效没有"可自证
+
+### 新增
+
+**启动时打印生效的开关** · `claude_options.go`
+
+```
+antidetect: options rate=1 burst=3 max_wait=30s content_gate=on window_gate=on egress=observe
+```
+
+在此之前，判断 `CPA_ANTIDETECT_*` 有没有进到进程，只能灌流量再看画像计数——而画像里的
+`paced` 本身还有语义错误（见下），于是"限速明明开着"被误判成"限速没生效"。Windows 上
+尤其容易踩：变量设在 User 作用域、服务以 LocalSystem 运行，两者看起来一模一样。
+
+### 修复
+
+**`paced` 语义错误** · `monitor.go` / `claude_throttle.go`
+
+`paced` 原来只在**等待预算耗尽、请求被拒**时 +1；正常排队等到槽位的情况完全不计。
+结果：限速器工作得越好，这个数越接近 0——恰好和它的名字相反。
+
+现在拆成两个计数：
+
+| 字段 | 含义 |
+|---|---|
+| `paced` | 等待后拿到槽位、继续发出的请求数 |
+| `pace_rejected` | 等到超时、被拒绝的请求数 |
+
+`tools/postmortem` 同步解析 `pace_rejected`。
+
+### 文档
+
+`README-Windows.md` 增加"环境变量为什么不生效"排查清单：作用域（Machine/User）、
+进程形态（服务 / 计划任务 / 手动）、重启顺序、`.env` 的工作目录问题。
+
+---
+
 ## [0.5.2] — 2026-10-19 · 版本适配与请求一致性
 
 ### 新增

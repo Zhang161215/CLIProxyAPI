@@ -26,11 +26,15 @@ const maxTrackedValues = 32
 type Profile struct {
 	CredentialID string
 
-	Requests    int64
-	Allowed     int64
-	Blocked     int64
-	Paced       int64
-	RateLimited int64
+	Requests int64
+	Allowed  int64
+	Blocked  int64
+	Paced    int64
+	// PaceRejected counts requests that gave up waiting for a slot. Paced
+	// counts requests that waited and then proceeded; the two were previously
+	// conflated, which made a working limiter look disabled.
+	PaceRejected int64
+	RateLimited  int64
 
 	ClientIPs   map[string]struct{}
 	UserAgents  map[string]struct{}
@@ -53,6 +57,7 @@ type Snapshot struct {
 	Allowed        int64
 	Blocked        int64
 	Paced          int64
+	PaceRejected   int64
 	RateLimited    int64
 	DistinctIPs    int
 	DistinctUAs    int
@@ -165,6 +170,20 @@ func (r *Registry) Pace(credentialID string) {
 	profile.LastSeen = r.now()
 }
 
+// PaceRejected records a request that exhausted its wait budget instead of
+// waiting for a slot.
+func (r *Registry) PaceRejected(credentialID string) {
+	if credentialID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	profile := r.profile(credentialID)
+	profile.PaceRejected++
+	profile.LastSeen = r.now()
+}
+
 // RateLimit records an upstream 429 for this credential.
 //
 // Rate limits are counted separately from pacing: pacing is our own decision,
@@ -217,6 +236,7 @@ func (r *Registry) Snapshots() []Snapshot {
 			Allowed:        profile.Allowed,
 			Blocked:        profile.Blocked,
 			Paced:          profile.Paced,
+			PaceRejected:   profile.PaceRejected,
 			RateLimited:    profile.RateLimited,
 			DistinctIPs:    len(profile.ClientIPs),
 			DistinctUAs:    len(profile.UserAgents),

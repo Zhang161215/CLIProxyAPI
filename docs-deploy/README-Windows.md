@@ -73,6 +73,58 @@ CLIProxyAPI Version: 0.5.0-antidetect, Commit: aa89d97d
 antidetect: claude_identity version=2.1.280 ... tls_hello_from=2.1.280 cch_from=2.1.280
 ```
 
+## 五半、环境变量为什么不生效（排查清单）
+
+`CPA_ANTIDETECT_*` 是**进程环境变量**，不是配置文件项。没设对时，服务能正常跑，
+只是那些开关全是默认值——最典型的表现是画像里 `paced` 一直是 0。
+
+按顺序查三件事：
+
+**1. 变量设在哪个作用域**
+
+```powershell
+[Environment]::GetEnvironmentVariable('CPA_ANTIDETECT_RATE','Machine')   # 服务通常只读得到这个
+[Environment]::GetEnvironmentVariable('CPA_ANTIDETECT_RATE','User')
+```
+
+服务以 `LocalSystem` 运行时，**读不到 Administrator 的用户变量**。要设在 Machine 作用域。
+
+**2. 进程是什么形态**（服务、计划任务、手动启动，三种都可能）
+
+```powershell
+# 服务
+Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*CLIProxy*' } | Select-Object Name,StartName,State
+# 计划任务
+Get-ScheduledTask | Where-Object { $_.Actions.Execute -like '*CLIProxy*' -or $_.TaskName -like '*CPA*' } |
+  Select-Object TaskName,State
+# 正在跑的进程
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*CLIProxyAPI*' -or $_.Name -like '*cpa*' } |
+  Select-Object ProcessId,Name,CommandLine
+```
+
+计划任务默认以**当前用户**运行（用户变量可见），服务默认以 **LocalSystem** 运行（只有 Machine 变量可见）——
+两种形态的结论完全不同，所以要先确认。
+
+**3. 重启顺序**
+
+环境变量只在新进程启动时读取。**先设变量，再重启**，顺序反了等于没设。
+
+**4. 用启动日志确认**
+
+`v0.5.3` 起，每次启动会打一行实际生效的开关：
+
+```
+antidetect: options rate=1 burst=3 max_wait=30s content_gate=on window_gate=on egress=observe
+```
+
+看到 `rate=0` 就是变量没进来，不用再靠并发测试反推。
+
+**5. 关于 `.env`**
+
+程序只读**工作目录**下的 `.env`。服务/计划任务的工作目录经常不是程序目录
+（服务默认是 `C:\Windows\System32`），所以 `.env` 放在程序旁边可能读不到。
+要稳妥就用 Machine 作用域的环境变量，或者显式设置工作目录。
+
 ## 六、做成后台服务（二选一）
 
 **方案 A：NSSM（推荐）**

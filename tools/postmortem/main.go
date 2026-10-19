@@ -29,18 +29,19 @@ import (
 
 // profile is one aggregated credential_profile line.
 type profile struct {
-	Credential string
-	At         time.Time
-	Requests   int
-	Allowed    int
-	Blocked    int
-	Paced      int
-	RateLimit  int
-	IPs        int
-	UAs        int
-	Entry      int
-	Sessions   int
-	MaxUtil    float64
+	Credential   string
+	At           time.Time
+	Requests     int
+	Allowed      int
+	Blocked      int
+	Paced        int
+	PaceRejected int
+	RateLimit    int
+	IPs          int
+	UAs          int
+	Entry        int
+	Sessions     int
+	MaxUtil      float64
 }
 
 // event is one non-profile audit line.
@@ -207,18 +208,19 @@ func parseFields(line string) map[string]string {
 
 func parseProfile(fields map[string]string, at time.Time) profile {
 	return profile{
-		Credential: fields["credential"],
-		At:         at,
-		Requests:   atoi(fields["summary"], "requests"),
-		Allowed:    atoi(fields["summary"], "allowed"),
-		Blocked:    atoi(fields["summary"], "blocked"),
-		Paced:      atoi(fields["summary"], "paced"),
-		RateLimit:  atoi(fields["summary"], "ratelimited"),
-		IPs:        atoi(fields["summary"], "ips"),
-		UAs:        atoi(fields["summary"], "uas"),
-		Entry:      atoi(fields["summary"], "entry"),
-		Sessions:   atoi(fields["summary"], "sessions"),
-		MaxUtil:    atof(fields["summary"], "max_util"),
+		Credential:   fields["credential"],
+		At:           at,
+		Requests:     atoi(fields["summary"], "requests"),
+		Allowed:      atoi(fields["summary"], "allowed"),
+		Blocked:      atoi(fields["summary"], "blocked"),
+		Paced:        atoi(fields["summary"], "paced"),
+		PaceRejected: atoi(fields["summary"], "pace_rejected"),
+		RateLimit:    atoi(fields["summary"], "ratelimited"),
+		IPs:          atoi(fields["summary"], "ips"),
+		UAs:          atoi(fields["summary"], "uas"),
+		Entry:        atoi(fields["summary"], "entry"),
+		Sessions:     atoi(fields["summary"], "sessions"),
+		MaxUtil:      atof(fields["summary"], "max_util"),
 	}
 }
 
@@ -277,12 +279,13 @@ func report(credential string, since time.Duration, profiles []profile, events [
 
 	// Union the profile windows: a credential seen for days has many windows,
 	// and the question is what happened across all of them.
-	var totalRequests, totalBlocked, totalPaced, totalRateLimit, maxIPs, maxUAs, maxEntry, maxSessions int
+	var totalRequests, totalBlocked, totalPaced, totalPaceRejected, totalRateLimit, maxIPs, maxUAs, maxEntry, maxSessions int
 	var maxUtil float64
 	for _, item := range profiles {
 		totalRequests += item.Requests
 		totalBlocked += item.Blocked
 		totalPaced += item.Paced
+		totalPaceRejected += item.PaceRejected
 		totalRateLimit += item.RateLimit
 		maxIPs = maxInt(maxIPs, item.IPs)
 		maxUAs = maxInt(maxUAs, item.UAs)
@@ -297,6 +300,7 @@ func report(credential string, since time.Duration, profiles []profile, events [
 	fmt.Printf("  requests       : %d\n", totalRequests)
 	fmt.Printf("  content blocks : %d\n", totalBlocked)
 	fmt.Printf("  paced          : %d\n", totalPaced)
+	fmt.Printf("  pace_rejected  : %d\n", totalPaceRejected)
 	fmt.Printf("  upstream 429s  : %d\n", totalRateLimit)
 	fmt.Printf("  max exits      : %d\n", maxIPs)
 	fmt.Printf("  max UAs        : %d\n", maxUAs)

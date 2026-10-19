@@ -143,3 +143,20 @@ func TestNilRegistryIsSafe(t *testing.T) {
 		t.Fatalf("nil registry snapshots = %v", got)
 	}
 }
+
+// Pacing that succeeds must be counted separately from pacing that gives up.
+// Conflating them made a working limiter look disabled.
+func TestPaceAndPaceRejectedAreSeparate(t *testing.T) {
+	registry := NewRegistry(time.Now)
+	registry.Pace("cred")
+	registry.Pace("cred")
+	registry.PaceRejected("cred")
+
+	snapshot := registry.Snapshots()[0]
+	if snapshot.Paced != 2 {
+		t.Fatalf("Paced = %d, want 2", snapshot.Paced)
+	}
+	if snapshot.PaceRejected != 1 {
+		t.Fatalf("PaceRejected = %d, want 1", snapshot.PaceRejected)
+	}
+}
