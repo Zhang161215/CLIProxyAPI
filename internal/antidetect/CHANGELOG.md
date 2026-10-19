@@ -31,6 +31,52 @@
 
 ---
 
+## [0.5.2] — 2026-10-19 · 版本适配与请求一致性
+
+### 新增
+
+**请求内部一致性检查** · `claude_consistency.go`
+
+一份请求里有几处字段会互相印证，对不上就是矛盾：
+
+| 检查 | 触发条件 | 为什么 |
+|---|---|---|
+| `timezone_conflict` | `tools[].user_location.timezone` 与凭证时区不一致 | 同一个请求描述了地球上两个位置 |
+| `foreign_identity` | system 里出现其他客户端的身份句（OpenCode / Cursor / Cline / Roo / Continue / Aider / Copilot） | 头声称是 Claude Code，system 却说自己是别的 agent |
+
+只告警、不改写——与 T-15 同样的原则：无法验证的字段不去动它。
+来源：`huoji120/sub4api` 的 locale 归一化实现（LGPL-3.0，只借鉴思路，未复制代码）。
+
+### 修复
+
+**不再转发新版本才有的头** · `claude_executor_request.go`
+
+2.1.303 引入 `x-claude-code-wiggly-dove`，据称带请求校验值。我们的入站头白名单按
+`x-claude-code-` 前缀放行，会把它原样转发——等于让一个 2.1.280 的请求携带 2.1.303
+才有的头，既是版本自相矛盾，也把别人签的名挂在自己名下。
+
+新增 `claudeVersionGatedHeaders` 黑名单，按版本台账拒绝这类头。
+
+### 版本适配
+
+- 抓包核对 2.1.303：TLS ClientHello 与 2.1.280 **完全一致**（17 cipher / 13 extension）
+- 计费行新增 `cc_prompt_index`、`cc_turn_index`；请求头新增 `x-claude-code-prompt-id`
+- `x-stainless-package-version` 0.112.1 → 0.128.0
+- `anthropic-beta` 少三项
+- CCH 种子未变：2.1.280 的种子精确复算 2.1.303 的 `ed74f`
+- 网关路径实测：`ANTHROPIC_BASE_URL` 非官方域名时，计费行退化为只剩版本号与 entrypoint
+
+台账仍以 2.1.280 为准（`Canonical()` 未切换）；切换需要同时改计费字段、头顺序与 beta 基线，
+清单见 `INTEL-2026-10.md`。
+
+### 工程
+
+- CI 版本串不再重复追加 `-antidetect`（曾产出 `v0.5.1-antidetect-antidetect`）
+- CI 测试失败时重试一次，避免被上游 flaky 并发测试卡住发布
+- macOS 包改用独立部署说明（原先套用了 Linux 的 systemd 部分）
+
+---
+
 ## [0.5.0] — 2026-10-18 · 对抗性复验后的修复
 
 对全部改动做了一次对抗性复验，找到并修掉五个"看起来实现了、实际不生效"的问题。
