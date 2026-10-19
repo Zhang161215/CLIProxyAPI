@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+### 新增
+
+**请求内部一致性检查** · `claude_consistency.go`
+
+一份请求里有几处字段会互相印证，对不上就是矛盾：
+
+| 检查 | 触发条件 | 为什么 |
+|---|---|---|
+| `timezone_conflict` | `tools[].user_location.timezone` 与凭证时区不一致 | 同一个请求描述了地球上两个位置 |
+| `foreign_identity` | system 里出现其他客户端的身份句（OpenCode / Cursor / Cline…） | 头声称是 Claude Code，system 却说自己是别的 agent |
+
+只告警、不改写——与 T-15 同样的原则：无法验证的字段不去动它。
+
+来源：`huoji120/sub4api` 的 locale 归一化实现（LGPL-3.0，只借鉴思路，未复制代码）。
+
 候选：
 - 调度层按窗口剩余量主动分流
 

@@ -30,6 +30,8 @@ const (
 	DecisionCollision Decision = "collision"
 	// DecisionDrift means an exit address changed after it was recorded.
 	DecisionDrift Decision = "drift"
+	// DecisionMismatch means two fields of one request disagree with each other.
+	DecisionMismatch Decision = "mismatch"
 )
 
 // Record is one auditable decision.

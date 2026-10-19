@@ -71,6 +71,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, errContent
 	}
 	recordClaudeFingerprint(auth, originalPayload)
+	recordClaudeConsistency(auth, e.cfg, originalPayload)
 	observeClaudeRequest(ctx, auth)
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
