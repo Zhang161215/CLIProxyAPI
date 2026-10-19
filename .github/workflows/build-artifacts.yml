@@ -62,10 +62,13 @@ jobs:
         # under CI load but pass consistently on a quiet machine (observed with
         # TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559). One retry
         # keeps the signal without letting upstream flakiness block releases.
+        # -p 1 keeps packages from competing for the runner's cores. Upstream's
+        # timing-sensitive tests (websocket retry, responses interrupt, openai
+        # compat concurrency) fail under parallel load and pass when serialised.
         run: |
-          if ! go test -count=1 ./...; then
+          if ! go test -count=1 -p 1 -timeout 20m ./...; then
             echo "first attempt failed; retrying once"
-            go test -count=1 ./...
+            go test -count=1 -p 1 -timeout 20m ./...
           fi
 
   # cgo build inside manylinux2014: plugins load, GLIBC stays at 2.17.
