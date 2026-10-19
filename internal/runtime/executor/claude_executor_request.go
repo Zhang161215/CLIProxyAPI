@@ -1132,6 +1132,13 @@ func claudeCredentialUsesOAuth(auth *cliproxyauth.Auth, apiKey string) bool {
 	return !hasAPIKeyAttr
 }
 
+// claudeVersionGatedHeaders lists caller headers that only exist in client
+// versions newer than the identity this fork presents. Keep this list tied to
+// the version ledger in internal/antidetect/versionguard.
+var claudeVersionGatedHeaders = map[string]bool{
+	"x-claude-code-wiggly-dove": true,
+}
+
 func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode bool) {
 	if dst == nil || src == nil {
 		return
@@ -1149,6 +1156,15 @@ func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCod
 			continue
 		}
 		if !confirmedClaudeCode && (strings.HasPrefix(lowerName, "x-claude-code-") || strings.HasPrefix(lowerName, "x-claude-remote-")) {
+			continue
+		}
+		// Headers introduced by a newer client than the identity we present are
+		// not forwarded: a 2.1.280 request cannot carry a header that version
+		// never sent. x-claude-code-wiggly-dove first appears in 2.1.30x and is
+		// documented as binding a checksum to the request it travels with, so
+		// passing one through from a different client version is both a version
+		// contradiction and a tamper signal we did not create.
+		if claudeVersionGatedHeaders[lowerName] {
 			continue
 		}
 		dst.Del(name)
