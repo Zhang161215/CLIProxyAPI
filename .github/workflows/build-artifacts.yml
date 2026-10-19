@@ -92,12 +92,13 @@ jobs:
         run: |
           set -euo pipefail
           version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          case "$version" in *antidetect*) suffix="" ;; *) suffix="-antidetect" ;; esac
           commit="$(git rev-parse --short HEAD)"
           built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p out
           docker run --rm \
             -v "$PWD:/src" -w /src \
-            -e GO_VERSION -e GOARCH -e VERSION="${version}-antidetect" -e COMMIT="$commit" -e BUILT="$built" \
+            -e GO_VERSION -e GOARCH -e VERSION="${version}${suffix}" -e COMMIT="$commit" -e BUILT="$built" \
             "$MANYLINUX_IMAGE" \
             bash -euo pipefail -c '
               go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
@@ -175,11 +176,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          case "$version" in *antidetect*) suffix="" ;; *) suffix="-antidetect" ;; esac
           commit="$(git rev-parse --short HEAD)"
           built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p out
           go build -trimpath \
-            -ldflags "-s -w -X main.Version=${version}-antidetect-noplugin -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -ldflags "-s -w -X main.Version=${version}${suffix}-noplugin -X main.Commit=${commit} -X main.BuildDate=${built}" \
             -o "out/cpa-linux-${{ matrix.goarch }}-no-plugin" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-linux-${{ matrix.goarch }}-no-plugin" ./tools/postmortem
           if ! file "out/cpa-linux-${{ matrix.goarch }}-no-plugin" | grep -q "statically linked"; then
@@ -232,11 +234,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          case "$version" in *antidetect*) suffix="" ;; *) suffix="-antidetect" ;; esac
           commit="$(git rev-parse --short HEAD)"
           built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p out
           go build -trimpath \
-            -ldflags "-s -w -X main.Version=${version}-antidetect -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -ldflags "-s -w -X main.Version=${version}${suffix} -X main.Commit=${commit} -X main.BuildDate=${built}" \
             -o "out/cpa-darwin-${{ matrix.goarch }}" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-darwin-${{ matrix.goarch }}" ./tools/postmortem
 
@@ -285,11 +288,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          case "$version" in *antidetect*) suffix="" ;; *) suffix="-antidetect" ;; esac
           commit="$(git rev-parse --short HEAD)"
           built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p out
           go build -trimpath \
-            -ldflags "-s -w -X main.Version=${version}-antidetect -X main.Commit=${commit} -X main.BuildDate=${built}" \
+            -ldflags "-s -w -X main.Version=${version}${suffix} -X main.Commit=${commit} -X main.BuildDate=${built}" \
             -o "out/cpa-windows-${{ matrix.goarch }}.exe" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "out/cpa-postmortem-windows-${{ matrix.goarch }}.exe" ./tools/postmortem
 
