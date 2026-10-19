@@ -49,6 +49,9 @@ var CCHSeeds = map[string]uint64{
 	// Verified 2026-10-18 against a live 2.1.280 request captured from this
 	// host: the tool recomputed the captured digest exactly (MATCH).
 	"2.1.280": 0x4d659218e32a3268,
+	// Verified 2026-10-19 against a live 2.1.303 request captured from this
+	// host (MATCH, cch=ed74f). The client version moved but the seed did not.
+	"2.1.303": 0x4d659218e32a3268,
 }
 
 // SeedFor returns the CCH seed for a Claude Code version and whether the
