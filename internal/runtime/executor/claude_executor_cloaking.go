@@ -148,6 +148,38 @@ func computeFingerprint(messageText, version string) string {
 	return hex.EncodeToString(h[:])[:3]
 }
 
+// claudeWorkloadCodes are the only values cc_workload accepts on the wire.
+//
+// They are opaque two-letter codes, not descriptive strings: a value like "cli"
+// or "main" is something no released client ever emits, and an operator who sets
+// X-CPA-Claude-Workload by hand would otherwise publish an impossible value.
+// Captured from a 2.1.280: the sdk path sends no cc_workload at all, so an
+// unknown value is dropped rather than guessed.
+var claudeWorkloadCodes = map[string]bool{
+	"ki": true, // 主对话、SDK 主请求、子代理、代理钩子
+	"tn": true, // 自动权限判断、权限调查、压缩事实核对、代理分类
+	"ny": true, // 上下文压缩、代理摘要、离开摘要、工具结果摘要
+	"ng": true, // 其他用途，或未提供用途
+}
+
+// normalizeClaudeWorkload keeps a known code and drops anything else.
+func normalizeClaudeWorkload(raw string) string {
+	code := strings.ToLower(strings.TrimSpace(raw))
+	if code == "" {
+		return ""
+	}
+	if claudeWorkloadCodes[code] {
+		return code
+	}
+	audit.Log(audit.Record{
+		Event:    "billing_header",
+		Decision: audit.DecisionMismatch,
+		Rule:     "workload_code",
+		Detail:   "dropped cc_workload=" + code + ": not a value the client emits",
+	})
+	return ""
+}
+
 // generateBillingHeader creates the x-anthropic-billing-header text block that
 // Claude Code prepends to its system prompt. cch is present only on signed paths.
 func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnOrigin ...string) string {
@@ -167,9 +199,9 @@ func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, wo
 	if cchSigning {
 		b.WriteString(" cch=00000;")
 	}
-	if workload != "" {
+	if code := normalizeClaudeWorkload(workload); code != "" {
 		b.WriteString(" cc_workload=")
-		b.WriteString(workload)
+		b.WriteString(code)
 		b.WriteByte(';')
 	}
 	if isSubagent {
