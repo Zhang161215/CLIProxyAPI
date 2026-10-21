@@ -244,6 +244,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	bodyForUpstream = applyClaudePreservedThinkingBinding(bodyForUpstream)
 	// User rules match the fully prepared business body and are applied only once.
 	var touchedPayloadPaths map[string]bool
+	// Remove the caller's gateway self-declaration before anything else looks at
+	// the body: the billing line lives in system text, not in a header.
+	bodyForUpstream = stripClaudeGatewayMarker(bodyForUpstream)
 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
 		e.cfg, baseModel, to.String(), from.String(), "", bodyForUpstream, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
 		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers,

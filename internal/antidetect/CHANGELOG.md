@@ -31,6 +31,39 @@
 
 ---
 
+## [0.5.5] — 2026-10-21 · 清除 cc_gateway 自曝
+
+### 修复
+
+**请求体会带着客户端的"网关自曝"发给上游** · `claude_gateway_marker.go`
+
+`ANTHROPIC_BASE_URL` 指向非官方地址时，客户端会在**计费行**里加一个标记：
+
+```
+x-anthropic-billing-header: cc_version=2.1.303.c24; cc_entrypoint=sdk-cli; cch=ed74f; cc_gateway=env; ...
+```
+
+在此之前，我们处理得并不完整：
+
+| 通道 | 状态 |
+|---|---|
+| 请求头 `x-gateway-*` / `x-cc-gateway-version` / `x-claude-gateway-*` | ✅ 白名单本就不放行 |
+| 我们自己合成的计费行 | ✅ 从不包含该字段 |
+| **客户端原本的计费行（确认客户端透传路径）** | ❌ **原样发给上游** |
+
+计费行在 **body 的 system 文本**里，不在 HTTP 头里，所以头白名单拦不住它。
+
+现在在 payload 规则之前统一清除 `cc_gateway=<值>;`，其余字段（版本、entrypoint、cch、
+attribution）保持原样——只删掉那句自曝，不改任何其他语义。
+
+### 边界
+
+- 只匹配 `cc_gateway=` 前缀，普通正文里出现这个词不受影响（有测试）
+- 未终止的写法（无分号）按行尾处理
+- 删除后不留下双空格
+
+---
+
 ## [0.5.4] — 2026-10-21 · 429 熔断
 
 ### 新增
