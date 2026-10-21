@@ -1139,6 +1139,18 @@ var claudeVersionGatedHeaders = map[string]bool{
 	"x-claude-code-wiggly-dove": true,
 }
 
+// gatewayDeclarationHeaders are stripped by meaning, not by name list.
+//
+// The allowlist above decides what may travel; this decides what may never
+// travel, and it has to be independent of the allowlist. A future client can
+// name a header x-claude-code-gateway-something and the x-claude-code- prefix
+// would wave it through, which is the same shape as the wiggly-dove mistake.
+// Any caller header that names a gateway is a self-declaration of the relay the
+// request is passing through.
+func isGatewayDeclarationHeader(lowerName string) bool {
+	return strings.Contains(lowerName, "gateway")
+}
+
 func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode bool) {
 	if dst == nil || src == nil {
 		return
@@ -1153,6 +1165,10 @@ func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCod
 			!strings.HasPrefix(lowerName, "x-claude-remote-") &&
 			lowerName != "x-client-app" &&
 			lowerName != "x-anthropic-additional-protection" {
+			continue
+		}
+		if isGatewayDeclarationHeader(lowerName) {
+			recordGatewayDeclaration("header:" + lowerName)
 			continue
 		}
 		if !confirmedClaudeCode && (strings.HasPrefix(lowerName, "x-claude-code-") || strings.HasPrefix(lowerName, "x-claude-remote-")) {

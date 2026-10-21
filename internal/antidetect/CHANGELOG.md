@@ -31,6 +31,52 @@
 
 ---
 
+## [0.5.6] — 2026-10-21 · 网关自曝按语义处理
+
+### 背景
+
+v0.5.5 清掉了 body 里的 `cc_gateway`。但请求头那一层仍是**白名单放行**：
+只要名字撞上 `x-claude-code-` 前缀就会通过，将来出现
+`x-claude-code-gateway-xxx` 会顺着前缀混过去——和 wiggly-dove 同一类错误。
+
+### 改动
+
+**请求头改为按语义拒绝** · `claude_executor_request.go`
+
+```go
+func isGatewayDeclarationHeader(lowerName string) bool {
+    return strings.Contains(lowerName, "gateway")
+}
+```
+
+不管叫什么名字、属于哪个前缀，只要头名包含 `gateway` 就丢弃。覆盖：
+
+```
+x-gateway-model          x-cc-gateway-version
+x-gateway-upstream       x-claude-gateway-user-email
+x-gateway-upstream-kind  x-claude-gateway-user-id
+x-gateway-spend-admin
+```
+
+**首次出现时记一条审计** · `claude_gateway_declaration.go`
+
+```
+antidetect event="gateway_declaration" decision="mismatch"
+  detail="stripped header:x-gateway-model: the client is announcing the relay it runs behind"
+```
+
+同一通道只报一次（有上界），避免繁忙时刷屏。目的是让操作者知道**自己的客户端在自曝**，
+而不是默默依赖代理兜住。
+
+body 清除路径也接入同一条审计（`body:cc_gateway`）。
+
+### 测试
+
+丢弃按语义命中（含 `x-claude-code-gateway-hint` 这种会绕过前缀的写法）、
+正常头不受影响、审计去重。
+
+---
+
 ## [0.5.5] — 2026-10-21 · 清除 cc_gateway 自曝
 
 ### 修复

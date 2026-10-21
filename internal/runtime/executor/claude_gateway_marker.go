@@ -31,6 +31,8 @@ func stripClaudeGatewayMarker(body []byte) []byte {
 		return body
 	}
 
+	recordGatewayDeclaration("body:cc_gateway")
+
 	out := body
 	if system.Type == gjson.String {
 		if next, changed := scrubGatewayMarkerText(system.String()); changed {
