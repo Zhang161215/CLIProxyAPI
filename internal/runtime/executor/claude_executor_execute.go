@@ -316,6 +316,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if errEgress := checkClaudeEgress(auth); errEgress != nil {
 		return resp, errEgress
 	}
+	// Stop before the throttle: a credential that upstream is already rejecting
+	// must not spend its pacing budget producing more rejected requests.
+	if errBreaker := awaitClaudeBreaker(auth); errBreaker != nil {
+		return resp, errBreaker
+	}
 	// Pace this credential before the request leaves. Inter-request timing is
 	// one of the few signals a proxy cannot disguise with a better payload.
 	if errThrottle := awaitClaudeRateSlot(ctx, auth); errThrottle != nil {
@@ -325,6 +330,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if httpResp != nil {
 		if httpResp.StatusCode == http.StatusTooManyRequests {
 			recordClaudeRateLimit(auth)
+			recordClaudeBreakerTraffic(auth)
 		}
 		observeClaudeWindow(auth, httpResp.Header)
 	}

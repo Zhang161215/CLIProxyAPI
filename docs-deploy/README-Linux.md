@@ -64,6 +64,8 @@ CPA_ANTIDETECT_RATE=1
 CPA_ANTIDETECT_BURST=3
 # 单机单号：不开强制绑定，但开出口漂移检测
 CPA_ANTIDETECT_EGRESS={"enforce":false,"pools":{"local":{"proxy_url":""}}}
+# 429 熔断：窗口内累计 N 次 429 就冷却（默认 5/15m/15m）
+CPA_ANTIDETECT_BREAKER=5/15m/15m
 ```
 
 **不要设** `CPA_ANTIDETECT_ALLOW_VERSION_DRIFT`——那是排障逃生阀。

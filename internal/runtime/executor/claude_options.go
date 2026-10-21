@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/breaker"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/egress"
 )
 
@@ -18,9 +20,9 @@ func AntidetectOptionsSummary() string {
 	rate := envFloat(RateEnv, 0)
 	burst := envFloat(BurstEnv, 1)
 	return fmt.Sprintf(
-		"rate=%g burst=%g max_wait=%s content_gate=%s window_gate=%s egress=%s",
+		"rate=%g burst=%g max_wait=%s content_gate=%s window_gate=%s egress=%s breaker=%s",
 		rate, burst, maxThrottleWait(),
-		gateState(ContentGateEnv), gateState(WindowGateEnv), egressState(),
+		gateState(ContentGateEnv), gateState(WindowGateEnv), egressState(), breakerState(),
 	)
 }
 
@@ -35,6 +37,23 @@ func gateState(name string) string {
 	default:
 		return "on(unparsed:" + raw + ")"
 	}
+}
+
+// breakerState renders the 429 breaker configuration.
+func breakerState() string {
+	opts, enabled := breaker.OptionsFromEnv()
+	if !enabled {
+		return "off"
+	}
+	return fmt.Sprintf("%d/%s/%s", opts.Threshold, compactDuration(opts.Window), compactDuration(opts.Cooldown))
+}
+
+// compactDuration keeps whole minutes readable: 15m rather than 15m0s.
+func compactDuration(value time.Duration) string {
+	if value%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int(value/time.Minute))
+	}
+	return value.String()
 }
 
 // egressState reports whether the exit binder enforces its policy.
