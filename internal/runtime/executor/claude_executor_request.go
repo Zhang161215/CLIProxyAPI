@@ -1151,35 +1151,70 @@ func isGatewayDeclarationHeader(lowerName string) bool {
 	return strings.Contains(lowerName, "gateway")
 }
 
+// claudeForwardedCallerHeaders is an allowlist built from the headers a real
+// 2.1.280 client actually sends, captured on the wire.
+//
+// The previous rule was prefix-based ("anything under x-claude-code- travels"),
+// which is how x-claude-code-wiggly-dove got through: a header that ships a git
+// remote URL and a request checksum, named to look like every other member of
+// that family. A prefix answers "does this name look familiar", not "did the
+// client we claim to be ever send this", and the second question is the one that
+// matters. Anything not in this list is dropped by default, so a future client
+// adds a header only after this fork has captured and reviewed it.
+var claudeForwardedCallerHeaders = map[string]bool{
+	"accept":                                    true,
+	"accept-encoding":                           true,
+	"user-agent":                                true,
+	"x-app":                                     true,
+	"x-client-request-id":                       true,
+	"x-claude-code-session-id":                  true,
+	"x-claude-code-request-class":               true,
+	"x-stainless-arch":                          true,
+	"x-stainless-lang":                          true,
+	"x-stainless-os":                            true,
+	"x-stainless-package-version":               true,
+	"x-stainless-retry-count":                   true,
+	"x-stainless-runtime":                       true,
+	"x-stainless-runtime-version":               true,
+	"x-stainless-timeout":                       true,
+	"anthropic-beta":                            true,
+	"anthropic-dangerous-direct-browser-access": true,
+	"anthropic-version":                         true,
+	// Deliberate extras: used by the proxy itself for caller-owned apps and the
+	// additional-protection switch. Not observed on the sdk-cli capture.
+	"x-client-app":                      true,
+	"x-anthropic-additional-protection": true,
+}
+
+// claudeForwardedCallerPrefixes covers namespaces owned by the SDK rather than by
+// the client: the Stainless transport sets x-stainless-*, and anthropic-* is the
+// API's own parameter namespace. Neither is a channel a client uses to describe
+// itself, which is what the explicit list guards.
+func claudeForwardedCallerPrefixes(lowerName string) bool {
+	return strings.HasPrefix(lowerName, "x-stainless-") || strings.HasPrefix(lowerName, "anthropic-")
+}
+
 func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode bool) {
 	if dst == nil || src == nil {
 		return
 	}
 	for name, values := range src {
 		lowerName := strings.ToLower(strings.TrimSpace(name))
-		if lowerName != "accept" && lowerName != "accept-encoding" && lowerName != "user-agent" &&
-			lowerName != "x-app" && lowerName != "x-client-request-id" &&
-			!strings.HasPrefix(lowerName, "anthropic-") &&
-			!strings.HasPrefix(lowerName, "x-stainless-") &&
-			!strings.HasPrefix(lowerName, "x-claude-code-") &&
-			!strings.HasPrefix(lowerName, "x-claude-remote-") &&
-			lowerName != "x-client-app" &&
-			lowerName != "x-anthropic-additional-protection" {
+		if !claudeForwardedCallerHeaders[lowerName] && !claudeForwardedCallerPrefixes(lowerName) {
 			continue
 		}
 		if isGatewayDeclarationHeader(lowerName) {
 			recordGatewayDeclaration("header:" + lowerName)
 			continue
 		}
-		if !confirmedClaudeCode && (strings.HasPrefix(lowerName, "x-claude-code-") || strings.HasPrefix(lowerName, "x-claude-remote-")) {
+		// Claude-specific identity headers are only trusted from a caller the
+		// detector already recognised as Claude Code.
+		if !confirmedClaudeCode && strings.HasPrefix(lowerName, "x-claude-") {
 			continue
 		}
 		// Headers introduced by a newer client than the identity we present are
 		// not forwarded: a 2.1.280 request cannot carry a header that version
-		// never sent. x-claude-code-wiggly-dove first appears in 2.1.30x and is
-		// documented as binding a checksum to the request it travels with, so
-		// passing one through from a different client version is both a version
-		// contradiction and a tamper signal we did not create.
+		// never sent.
 		if claudeVersionGatedHeaders[lowerName] {
 			continue
 		}
