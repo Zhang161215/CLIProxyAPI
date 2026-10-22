@@ -42,12 +42,14 @@ const (
 const (
 	// DegradedAt and BlockedAt are the default utilization thresholds.
 	//
-	// The block threshold is the whole point of the gate: it decides how close a
-	// credential is allowed to run to its ceiling. Case 2026-10 spent a day at an
-	// average of 0.92 and was put on hold; a day at 0.57 was unremarkable. The
-	// defaults leave roughly a sixth of the window unused on purpose.
-	DegradedAt = 0.75
-	BlockedAt  = 0.85
+	// The block threshold decides how close a credential may run to its ceiling.
+	// 0.90 keeps a tenth of the window in reserve without discarding a noticeable
+	// share of a paid plan. The evidence behind any specific number is weak: the
+	// only case on record (2026-10) correlated a day at 0.92 with an account hold,
+	// but that case is confounded with account age and cannot separate the two.
+	// Deployments that see a different pattern should set the level explicitly.
+	DegradedAt = 0.85
+	BlockedAt  = 0.90
 )
 
 // Thresholds are the utilization levels at which a window is considered

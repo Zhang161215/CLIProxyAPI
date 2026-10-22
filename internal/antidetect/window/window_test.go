@@ -15,10 +15,10 @@ func TestEvaluateThresholds(t *testing.T) {
 	}{
 		{0, StateNormal},
 		{0.5, StateNormal},
-		{0.749, StateNormal},
-		{0.75, StateDegraded},
-		{0.849, StateDegraded},
-		{0.85, StateBlocked},
+		{0.849, StateNormal},
+		{0.85, StateDegraded},
+		{0.899, StateDegraded},
+		{0.90, StateBlocked},
 		{1.0, StateBlocked},
 		{1.4, StateBlocked},
 	}
