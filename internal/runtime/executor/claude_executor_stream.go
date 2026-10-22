@@ -257,6 +257,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
 	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
+	// Only a billing line this fork wrote is refreshed: a confirmed client's
+	// header already describes its own text, and recomputing it there would
+	// corrupt an authoritative value.
+	if cloaked {
+		bodyForUpstream = refreshClaudeBillingFingerprint(bodyForUpstream)
+	}
 	if cchSigning {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {

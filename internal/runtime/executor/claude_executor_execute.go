@@ -265,6 +265,14 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
 	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
+	// The attribution suffix is verified upstream and must describe the body that
+	// is actually sent, so it is refreshed after every mutation below.
+	// Only a billing line this fork wrote is refreshed: a confirmed client's
+	// header already describes its own text, and recomputing it there would
+	// corrupt an authoritative value.
+	if cloaked {
+		bodyForUpstream = refreshClaudeBillingFingerprint(bodyForUpstream)
+	}
 	if cchSigning {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {
