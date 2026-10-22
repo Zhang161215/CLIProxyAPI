@@ -1702,7 +1702,7 @@ func applyClaudeHeadersWithNativeProfile(
 	// consistent fingerprint that replacing would only fabricate over.
 	callerState := helps.DetectClientState(incomingHeaders, nil, false, confirmedClaudeCode, cfg)
 	if wirePolicy.ExplicitNever && confirmedClaudeCode {
-		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, nil, true)
+		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, true, true)
 	} else if callerState == helps.ClaudeClientUnknown {
 		helps.ApplyClaudeCallerDeviceHeaders(r, incomingHeaders, cfg)
 	} else if stabilizeDeviceProfile {
