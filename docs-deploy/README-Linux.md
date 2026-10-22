@@ -66,6 +66,8 @@ CPA_ANTIDETECT_BURST=3
 CPA_ANTIDETECT_EGRESS={"enforce":false,"pools":{"local":{"proxy_url":""}}}
 # 429 熔断：窗口内累计 N 次 429 就冷却（默认 5/15m/15m）
 CPA_ANTIDETECT_BREAKER=5/15m/15m
+# 内容闸：按 ID 停用某条规则（误报时用，别关整个闸）
+# CPA_ANTIDETECT_CONTENT_GATE_DISABLE=distill.zh.prompt
 # 窗口阈值（默认 0.75 降级 / 0.85 拦截）
 # CPA_ANTIDETECT_WINDOW_BLOCK=0.85
 # CPA_ANTIDETECT_WINDOW_DEGRADE=0.75

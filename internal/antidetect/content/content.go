@@ -13,9 +13,11 @@ package content
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Category groups rules by the failure they prevent.
@@ -60,10 +62,16 @@ var builtinPatterns = []struct {
 	{"distill.instructions_dump", CategoryDistill, `(?i)(what|which)\b.{0,32}\b(system prompt|system message|instructions)\b.{0,24}\b(are|were|do) you\b`},
 	{"distill.ignore_previous", CategoryDistill, `(?i)ignore\b.{0,20}\b(all )?(the )?(previous|prior|above|earlier) (instructions|rules|prompts)\b`},
 	{"distill.reasoning_dump", CategoryDistill, `(?i)(full|entire|complete|detailed|step[- ]by[- ]step)\b.{0,24}\b(chain[- ]of[- ]thought|reasoning (?:trace|process|steps))\b`},
-	{"distill.zh.prompt", CategoryDistill, `(输出|打印|复述|展示|泄露|给我看).{0,12}(系统)?(提示词|系统消息|隐藏指令)`},
+	// The noun carries the signal: 系统提示词 / 隐藏指令, never a bare 提示词.
+	// 提示词 is ordinary vocabulary in Chinese LLM work (write the prompt, tune
+	// the template, compare prompts), so matching it bare turned normal
+	// documentation into a violation. The window is wider than the English rule
+	// on purpose: with the noun pinned, a longer reach catches more attempts
+	// without catching ordinary prose.
+	{"distill.zh.prompt", CategoryDistill, `(输出|打印|复述|展示|泄露|给我看|发给我|告诉我).{0,16}(你的|您的|当前|原始|完整的?)?(系统提示词|系统提示|系统消息|系统指令|隐藏指令|隐藏提示词)`},
 	{"distill.zh.ignore", CategoryDistill, `忽略(之前|以上|上述|前面).{0,8}(的)?(所有)?(指令|指示|规则|限制)`},
 	{"distill.zh.reasoning", CategoryDistill, `(完整|详细|逐步).{0,10}(输出|展示|写出|给出).{0,10}(思维链|推理过程|思考过程)`},
-	{"distill.zh.prompt_after", CategoryDistill, `(提示词|系统消息|隐藏指令).{0,12}(输出|打印|复述|展示|发给我|给我|告诉)`},
+	{"distill.zh.prompt_after", CategoryDistill, `(系统提示词|系统提示|系统消息|系统指令|隐藏指令|隐藏提示词).{0,16}(完整|详细|原样)?.{0,6}(输出|打印|复述|展示|泄露|给我看|发给我|告诉我)`},
 	{"distill.zh.reasoning_after", CategoryDistill, `(思维链|推理过程|思考过程).{0,10}(完整|详细|逐步).{0,10}(输出|展示|写出|给出)`},
 	{"jailbreak.dan", CategoryJailbreak, `(?i)\b(DAN|do anything now)\b`},
 	{"jailbreak.persona", CategoryJailbreak, `(?i)(act|behave|respond) as (?:an? )?(unrestricted|uncensored|unfiltered|evil|amoral)\b`},
@@ -81,6 +89,13 @@ var (
 	baseRules   = activeRules
 )
 
+// DisableEnv lists rule IDs to skip, comma separated.
+//
+// A single over-eager rule used to leave the operator with one option: turn the
+// whole gate off and lose every other rule with it. Naming the rule is the
+// smaller hammer.
+const DisableEnv = "CPA_ANTIDETECT_CONTENT_GATE_DISABLE"
+
 func compileRules() []Rule {
 	compiled := make([]Rule, 0, len(builtinPatterns))
 	for _, entry := range builtinPatterns {
@@ -90,7 +105,37 @@ func compileRules() []Rule {
 			Pattern:  regexp.MustCompile(entry.pattern),
 		})
 	}
-	return compiled
+	return filterDisabled(compiled)
+}
+
+// filterDisabled drops rules named in DisableEnv.
+func filterDisabled(rules []Rule) []Rule {
+	disabled := disabledRuleIDs()
+	if len(disabled) == 0 {
+		return rules
+	}
+	kept := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		if disabled[rule.ID] {
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	return kept
+}
+
+func disabledRuleIDs() map[string]bool {
+	raw := strings.TrimSpace(os.Getenv(DisableEnv))
+	if raw == "" {
+		return nil
+	}
+	disabled := make(map[string]bool, 4)
+	for _, part := range strings.Split(raw, ",") {
+		if id := strings.TrimSpace(part); id != "" {
+			disabled[id] = true
+		}
+	}
+	return disabled
 }
 
 // Rules returns the active rule set. Callers must not mutate it.
@@ -110,12 +155,13 @@ func SetExtraRules(extra []Rule) {
 	combined = append(combined, extra...)
 
 	rulesMu.Lock()
-	activeRules = combined
+	activeRules = filterDisabled(combined)
 	rulesMu.Unlock()
 }
 
 // Scan evaluates one text against every rule and returns the first match.
 func Scan(text string) Verdict {
+	text = scanScope(text)
 	if strings.TrimSpace(text) == "" {
 		return Verdict{}
 	}
@@ -132,6 +178,46 @@ func Scan(text string) Verdict {
 		}
 	}
 	return Verdict{}
+}
+
+const (
+	// scanChunkBytes is how much of each end of a very long text is searched.
+	scanChunkBytes = 16 * 1024
+	// scanMaxBytes is past which a text is searched by its ends only.
+	scanMaxBytes = 32 * 1024
+)
+
+// machineWrapped matches text a client assembles rather than a person types.
+//
+// The security-review subagent wraps the entire prior conversation in a
+// <transcript> block and sends it as a user message; a 130k-character document
+// then gets scanned end to end, so the chance that some rule fires somewhere
+// grows with document length instead of with intent. The block is the review
+// subject, not an instruction.
+var machineWrapped = regexp.MustCompile(`(?is)<transcript>.*?</transcript>`)
+
+// scanScope reduces a text to what a person actually wrote.
+//
+// Long inputs are searched at both ends rather than in full: an instruction to
+// leak something sits at the start or the end of a message, never 100 KB into a
+// pasted file, and scanning everything made cost and false positives grow with
+// paste size.
+func scanScope(text string) string {
+	if strings.Contains(text, "transcript>") {
+		text = machineWrapped.ReplaceAllString(text, " ")
+	}
+	if len(text) <= scanMaxBytes {
+		return text
+	}
+	head := text[:scanChunkBytes]
+	for len(head) > 0 && !utf8.RuneStart(text[len(head)]) {
+		head = head[:len(head)-1]
+	}
+	tailStart := len(text) - scanChunkBytes
+	for tailStart < len(text) && !utf8.RuneStart(text[tailStart]) {
+		tailStart++
+	}
+	return head + "\n" + text[tailStart:]
 }
 
 // excerpt returns a bounded window around the match so audit logs stay small.
