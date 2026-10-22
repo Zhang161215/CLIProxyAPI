@@ -192,8 +192,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	var cfg Config
 	// Set defaults before unmarshal so that absent keys keep defaults.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
-	cfg.LoggingToFile = false
-	cfg.LogsMaxTotalSizeMB = 0
+	// File logging defaults on. Without it a restart erases the only record of
+	// what a credential actually did, which is exactly the evidence needed when
+	// an upstream account is restricted. The size cap defaults with it so that
+	// enabling the files cannot fill a disk.
+	cfg.LoggingToFile = true
+	cfg.LogsMaxTotalSizeMB = 512
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
 	cfg.RedisUsageQueueRetentionSeconds = 60
