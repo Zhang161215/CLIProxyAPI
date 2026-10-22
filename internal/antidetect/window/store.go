@@ -59,6 +59,11 @@ func (s *Store) Observe(credentialID string, snapshots []Snapshot) {
 // Unknown or stale observations report StateNormal: the gate exists to stop
 // hammering a full window, not to invent one.
 func (s *Store) State(credentialID string) State {
+	return s.StateWith(credentialID, DefaultThresholds())
+}
+
+// StateWith evaluates the stored windows against explicit thresholds.
+func (s *Store) StateWith(credentialID string, thresholds Thresholds) State {
 	if s == nil || credentialID == "" {
 		return StateNormal
 	}
@@ -80,7 +85,7 @@ func (s *Store) State(credentialID string) State {
 		if now.Sub(observed) > ObservationTTL {
 			continue
 		}
-		state = Worst(state, Evaluate(snapshot, now))
+		state = Worst(state, EvaluateWith(snapshot, now, thresholds))
 	}
 	return state
 }

@@ -66,6 +66,9 @@ CPA_ANTIDETECT_BURST=3
 CPA_ANTIDETECT_EGRESS={"enforce":false,"pools":{"local":{"proxy_url":""}}}
 # 429 熔断：窗口内累计 N 次 429 就冷却（默认 5/15m/15m）
 CPA_ANTIDETECT_BREAKER=5/15m/15m
+# 窗口阈值（默认 0.75 降级 / 0.85 拦截）
+# CPA_ANTIDETECT_WINDOW_BLOCK=0.85
+# CPA_ANTIDETECT_WINDOW_DEGRADE=0.75
 ```
 
 **不要设** `CPA_ANTIDETECT_ALLOW_VERSION_DRIFT`——那是排障逃生阀。

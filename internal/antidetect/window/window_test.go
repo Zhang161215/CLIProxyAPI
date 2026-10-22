@@ -15,10 +15,10 @@ func TestEvaluateThresholds(t *testing.T) {
 	}{
 		{0, StateNormal},
 		{0.5, StateNormal},
-		{0.899, StateNormal},
-		{0.90, StateDegraded},
-		{0.94, StateDegraded},
-		{0.95, StateBlocked},
+		{0.749, StateNormal},
+		{0.75, StateDegraded},
+		{0.849, StateDegraded},
+		{0.85, StateBlocked},
 		{1.0, StateBlocked},
 		{1.4, StateBlocked},
 	}
@@ -86,8 +86,8 @@ func TestParseHeadersReadsBothWindows(t *testing.T) {
 	if byKind[KindShort].ResetsAt.IsZero() {
 		t.Fatal("5h reset must parse from an epoch")
 	}
-	if got := Evaluate(byKind[KindLong], testNow); got != StateDegraded {
-		t.Fatalf("7d state = %s, want degraded", got)
+	if got := Evaluate(byKind[KindLong], testNow); got != StateBlocked {
+		t.Fatalf("7d state = %s, want blocked", got)
 	}
 }
 
@@ -124,5 +124,27 @@ func TestWorstSelectsStricterState(t *testing.T) {
 	}
 	if got := Worst(StateNormal, StateNormal); got != StateNormal {
 		t.Fatalf("worst = %s", got)
+	}
+}
+
+// The thresholds decide how close a credential may run to its ceiling, so they
+// have to be adjustable without a rebuild.
+func TestEvaluateWithCustomThresholds(t *testing.T) {
+	snapshot := Snapshot{Utilization: 0.60}
+	if got := EvaluateWith(snapshot, testNow, Thresholds{Degraded: 0.55, Blocked: 0.65}); got != StateDegraded {
+		t.Fatalf("custom degrade: got %s", got)
+	}
+	if got := EvaluateWith(Snapshot{Utilization: 0.70}, testNow, Thresholds{Degraded: 0.55, Blocked: 0.65}); got != StateBlocked {
+		t.Fatalf("custom block: got %s", got)
+	}
+}
+
+func TestThresholdsNormalizedRejectsNonsense(t *testing.T) {
+	got := Thresholds{Degraded: 0.95, Blocked: 1.5}.Normalized()
+	if got.Blocked != BlockedAt {
+		t.Fatalf("out-of-range block level kept: %+v", got)
+	}
+	if got.Degraded >= got.Blocked {
+		t.Fatalf("degraded must stay below blocked: %+v", got)
 	}
 }

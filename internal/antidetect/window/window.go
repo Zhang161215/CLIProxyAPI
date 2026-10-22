@@ -40,10 +40,42 @@ const (
 )
 
 const (
-	// DegradedAt and BlockedAt are utilization thresholds.
-	DegradedAt = 0.90
-	BlockedAt  = 0.95
+	// DegradedAt and BlockedAt are the default utilization thresholds.
+	//
+	// The block threshold is the whole point of the gate: it decides how close a
+	// credential is allowed to run to its ceiling. Case 2026-10 spent a day at an
+	// average of 0.92 and was put on hold; a day at 0.57 was unremarkable. The
+	// defaults leave roughly a sixth of the window unused on purpose.
+	DegradedAt = 0.75
+	BlockedAt  = 0.85
 )
+
+// Thresholds are the utilization levels at which a window is considered
+// degraded and full.
+type Thresholds struct {
+	Degraded float64
+	Blocked  float64
+}
+
+// DefaultThresholds returns the compiled-in levels.
+func DefaultThresholds() Thresholds {
+	return Thresholds{Degraded: DegradedAt, Blocked: BlockedAt}
+}
+
+// Normalized keeps the values usable: a block level at or below the degraded
+// level would make "degraded" unreachable, so the pair is clamped.
+func (t Thresholds) Normalized() Thresholds {
+	if t.Blocked <= 0 || t.Blocked > 1 {
+		t.Blocked = BlockedAt
+	}
+	if t.Degraded < 0 || t.Degraded >= t.Blocked {
+		t.Degraded = t.Blocked - 0.10
+	}
+	if t.Degraded < 0 {
+		t.Degraded = 0
+	}
+	return t
+}
 
 // Snapshot is one observation of a window.
 type Snapshot struct {
@@ -63,9 +95,15 @@ type Snapshot struct {
 // as current would park a credential that has capacity again, so an elapsed
 // reset resets the utilization to zero.
 func Evaluate(snap Snapshot, now time.Time) State {
+	return EvaluateWith(snap, now, DefaultThresholds())
+}
+
+// EvaluateWith converts a snapshot into a state using explicit thresholds.
+func EvaluateWith(snap Snapshot, now time.Time, thresholds Thresholds) State {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	thresholds = thresholds.Normalized()
 	utilization := snap.Utilization
 	if utilization < 0 {
 		utilization = 0
@@ -74,9 +112,9 @@ func Evaluate(snap Snapshot, now time.Time) State {
 		utilization = 0
 	}
 	switch {
-	case utilization >= BlockedAt:
+	case utilization >= thresholds.Blocked:
 		return StateBlocked
-	case utilization >= DegradedAt:
+	case utilization >= thresholds.Degraded:
 		return StateDegraded
 	default:
 		return StateNormal

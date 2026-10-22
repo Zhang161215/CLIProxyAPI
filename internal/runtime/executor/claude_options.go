@@ -20,9 +20,9 @@ func AntidetectOptionsSummary() string {
 	rate := envFloat(RateEnv, 0)
 	burst := envFloat(BurstEnv, 1)
 	return fmt.Sprintf(
-		"rate=%g burst=%g max_wait=%s content_gate=%s window_gate=%s egress=%s breaker=%s",
+		"rate=%g burst=%g max_wait=%s content_gate=%s window_gate=%s egress=%s breaker=%s window=%s",
 		rate, burst, maxThrottleWait(),
-		gateState(ContentGateEnv), gateState(WindowGateEnv), egressState(), breakerState(),
+		gateState(ContentGateEnv), gateState(WindowGateEnv), egressState(), breakerState(), windowState(),
 	)
 }
 
@@ -46,6 +46,15 @@ func breakerState() string {
 		return "off"
 	}
 	return fmt.Sprintf("%d/%s/%s", opts.Threshold, compactDuration(opts.Window), compactDuration(opts.Cooldown))
+}
+
+// windowState renders the utilization levels the gate acts on.
+func windowState() string {
+	if !windowGateEnabled() {
+		return "off"
+	}
+	thresholds := windowThresholds()
+	return fmt.Sprintf("degrade%g/block%g", thresholds.Degraded, thresholds.Blocked)
 }
 
 // compactDuration keeps whole minutes readable: 15m rather than 15m0s.

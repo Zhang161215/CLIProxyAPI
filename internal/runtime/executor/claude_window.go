@@ -15,9 +15,18 @@ import (
 // WindowGateEnv disables the quota-window admission check.
 const WindowGateEnv = "CPA_ANTIDETECT_WINDOW_GATE"
 
+// Window threshold overrides. Utilization is the only trustworthy measure of how
+// much room a credential still has, so the block level is the knob that decides
+// how close to the ceiling it may run.
+const (
+	WindowDegradeEnv = "CPA_ANTIDETECT_WINDOW_DEGRADE"
+	WindowBlockEnv   = "CPA_ANTIDETECT_WINDOW_BLOCK"
+)
+
 var (
-	claudeWindowOnce  sync.Once
-	claudeWindowStore *window.Store
+	claudeWindowOnce       sync.Once
+	claudeWindowStore      *window.Store
+	claudeWindowThresholds window.Thresholds
 
 	// missingHeaderWarned rate-limits the "no quota headers" warning per
 	// credential: without it, an upstream that renames the headers would
@@ -29,6 +38,27 @@ var (
 // MissingHeaderWarnInterval bounds how often one credential may report that a
 // response carried no quota window headers.
 const MissingHeaderWarnInterval = 10 * time.Minute
+
+// claudeWindowThresholdsFromEnv reads the configured levels, clamped.
+func claudeWindowThresholdsFromEnv() window.Thresholds {
+	thresholds := window.DefaultThresholds()
+	if raw := strings.TrimSpace(os.Getenv(WindowDegradeEnv)); raw != "" {
+		thresholds.Degraded = envFloat(WindowDegradeEnv, thresholds.Degraded)
+	}
+	if raw := strings.TrimSpace(os.Getenv(WindowBlockEnv)); raw != "" {
+		thresholds.Blocked = envFloat(WindowBlockEnv, thresholds.Blocked)
+	}
+	return thresholds.Normalized()
+}
+
+// windowThresholds returns the cached levels.
+func windowThresholds() window.Thresholds {
+	claudeWindowOnce.Do(func() {
+		claudeWindowStore = window.NewStore(nil)
+		claudeWindowThresholds = claudeWindowThresholdsFromEnv()
+	})
+	return claudeWindowThresholds
+}
 
 func claudeWindows() *window.Store {
 	claudeWindowOnce.Do(func() {
@@ -70,7 +100,7 @@ func checkClaudeWindow(auth *cliproxyauth.Auth) error {
 	if credentialID == "" {
 		return nil
 	}
-	state := claudeWindows().State(credentialID)
+	state := claudeWindows().StateWith(credentialID, windowThresholds())
 	if state != window.StateBlocked {
 		return nil
 	}
@@ -135,7 +165,7 @@ func observeClaudeWindow(auth *cliproxyauth.Auth, headers http.Header) {
 	}
 
 	for _, snapshot := range snapshots {
-		state := window.Evaluate(snapshot, now)
+		state := window.EvaluateWith(snapshot, now, windowThresholds())
 		if state == window.StateNormal {
 			continue
 		}
