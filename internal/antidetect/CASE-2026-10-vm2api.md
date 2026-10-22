@@ -183,3 +183,32 @@ Volume and failure rate are the only differences.
 | Missing control | Proposal |
 |---|---|
 | **429 circuit breaker** | the registry counts `ratelimited` but nothing acts on it; add "N consecutive 429s within M minutes pauses the credential for a cooldown" |
+
+---
+
+## Appendix: live experiment on the second shared account
+
+The relay runs one account per server and shares it across users. Two accounts
+were created under identical conditions (iOS in-app purchase, iCloud address,
+AWS us-west-2 origin, same timezone setting).
+
+| | account A (cpa-5) | account B (cpa-6) |
+|---|---|---|
+| Created | 2026-10-18 19:27 | 2026-10-21 04:46 UTC |
+| Outcome | `account_on_hold` on 2026-10-21 11:42 (day 3) | running |
+| Successful requests | 4489 | 83 |
+| 7d utilization at check | 0.92 | 0.86 |
+| Distinct downstream IPs | 15 across 3 countries | unknown (logging was off) |
+| Peak concurrent requests | 10 | not yet measured |
+
+Both accounts are shared by multiple people, which is why their behaviour looks
+like several unrelated users rather than one: that is what the upstream sees, and
+it is the one signal a proxy cannot mask without refusing traffic.
+
+Account B had file logging disabled, so its history before 2026-10-22 is gone.
+Logging is now on (512 MB) and `credentials.concurrency.max-limit` was set to 3
+at 2026-10-22 01:35 UTC, with 7d utilization already at 0.86.
+
+Outcome to watch: if B outlives day 5, the concurrency cap is a usable lever for
+relays; if B also dies around day 3, sharing is not survivable and one account per
+user is the only option.
