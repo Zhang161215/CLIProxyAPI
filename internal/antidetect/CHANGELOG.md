@@ -31,6 +31,62 @@
 
 ---
 
+## [0.5.14] — 2026-10-23 · 原生 CLI 执行器原型
+
+### 为什么
+
+vm2api 的 README 写明它是"**每个 VM/容器槽位内部运行 Anthropic 原版 Claude Code 二进制程序**"——
+即图上的第②类。我们此前一直在做的是第③类：请求由自己的 Go 代码构造。
+
+两类在服务端眼里完全不是一个东西：
+
+| | HTTP 路径（现状） | CLI 路径（本版） |
+|---|---|---|
+| 谁发请求 | 我们的代码 | **官方二进制自己** |
+| cch / 遥测 / TLS / 会话 | 我们伪造或没有 | **原生生成** |
+| 流式粒度 | token 级 | 整条消息 |
+
+### 做了什么
+
+新增 `claude.cli` 配置，打开后 Claude 执行器**完全绕过 HTTP 管线**：
+
+```yaml
+claude:
+  cli:
+    enabled: true
+    binary: ""            # 空 = PATH 里的 claude
+    config-dir: ""        # 登录态目录
+    extra-args: []
+    timeout-seconds: 0    # 0 = 10 分钟
+```
+
+凭证可覆盖：
+
+```yaml
+# auth 文件 attributes
+cli_config_dir: /slots/account-a/.claude
+```
+
+实现分两层：
+
+- `internal/runtime/executor/helps/claude_cli.go` — 进程管理、stream-json 解析、把 messages 折叠成 prompt
+- `internal/runtime/executor/claude_cli_executor.go` — 把 CLI 输出转成 Anthropic JSON / SSE 事件序列
+
+**默认关闭**，关闭时行为与之前完全一致（有测试守着）。
+
+### 已知限制（刻意的，属于原型）
+
+- 历史被折叠进 prompt，没有用 CLI 的 session resume——resume 会把会话绑到一个 CLI 会话 id，池子就不能自由换 worker 了
+- 流式是"一条消息一次性推"，不是 token 级；事件序列仍是标准 Anthropic 格式
+- 图片块不进 prompt
+- 打开 CLI 模式后 payload 规则和 cloaking 都不参与——请求不是我们构造的，规则无从施加
+
+### 测试
+
+假 CLI 脚本覆盖：正常输出、非零退出、二进制缺失、prompt 折叠、凭证目录覆盖、开关默认关闭。
+
+---
+
 ## [0.5.13] — 2026-10-23 · 同步上游 Claude 修复 + 修一个并发崩溃
 
 ### 同步（只拿 Claude 路径）

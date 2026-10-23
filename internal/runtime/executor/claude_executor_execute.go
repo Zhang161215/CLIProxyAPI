@@ -18,6 +18,13 @@ import (
 
 func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	// Binary mode bypasses the HTTP pipeline entirely: no payload rules, no
+	// cloaking, no attestation of our own, because the official client builds
+	// and signs the request.
+	if worker, cliMode := e.claudeCLIWorker(auth); cliMode {
+		cliResp, _, errCLI := e.executeViaClaudeCLI(ctx, auth, req, worker)
+		return cliResp, errCLI
+	}
 	if errExpand := expandClaudeResponsesCompaction(&req, &opts); errExpand != nil {
 		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
 	}

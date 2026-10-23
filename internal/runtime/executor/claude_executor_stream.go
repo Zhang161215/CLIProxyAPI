@@ -20,6 +20,12 @@ import (
 
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	if worker, cliMode := e.claudeCLIWorker(auth); cliMode {
+		result, handled, errCLI := e.streamViaClaudeCLI(ctx, auth, req, worker)
+		if handled {
+			return result, errCLI
+		}
+	}
 	if errExpand := expandClaudeResponsesCompaction(&req, &opts); errExpand != nil {
 		return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
 	}

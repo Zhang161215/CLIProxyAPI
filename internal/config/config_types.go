@@ -121,6 +121,10 @@ type ClaudeConfig struct {
 	// translation elsewhere, and per-credential search advertising in the Codex
 	// catalog. Default false keeps the translation that predates tool_search support.
 	ToolSearch bool `yaml:"tool-search" json:"tool-search"`
+	// CLI serves Claude by running the official binary instead of building an
+	// HTTP request. Off by default: the HTTP path is the supported one, and the
+	// CLI path trades stream smoothness for a natively attested request.
+	CLI ClaudeCLIConfig `yaml:"cli" json:"cli"`
 	// SessionDatePinDays retains the cloaked currentDate pin per session for
 	// this many days, independently of continuity expiry and credential
 	// switches. A nil value (unset) defaults to 7 days; an explicit 0 keeps
@@ -1019,3 +1023,18 @@ func (m OpenAICompatibilityModel) GetIsCompat() bool               { return m.Is
 func (m OpenAICompatibilityModel) GetUseMaxCompletionTokens() bool { return m.UseMaxCompletionTokens }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// ClaudeCLIConfig configures the binary-driven executor.
+type ClaudeCLIConfig struct {
+	// Enabled switches Claude execution to the official CLI.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Binary is the claude executable. Empty resolves to "claude" on PATH.
+	Binary string `yaml:"binary" json:"binary"`
+	// ConfigDir holds the logged-in account. Each credential may override it
+	// with a cli_config_dir attribute.
+	ConfigDir string `yaml:"config-dir" json:"config-dir"`
+	// ExtraArgs appends to the CLI invocation.
+	ExtraArgs []string `yaml:"extra-args" json:"extra-args"`
+	// TimeoutSeconds bounds one invocation. Zero uses the built-in default.
+	TimeoutSeconds int `yaml:"timeout-seconds" json:"timeout-seconds"`
+}
