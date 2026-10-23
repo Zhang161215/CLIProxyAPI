@@ -19,6 +19,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antidetect/versionguard"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cmd"
@@ -32,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
@@ -642,6 +644,19 @@ func main() {
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)
+
+	// Refuse to serve an internally inconsistent Claude identity. A newer
+	// User-Agent over an older handshake advertises a client version that never
+	// shipped, which is both observable per request and stable across a session.
+	if errGuard := versionguard.Check(versionguard.Canonical(), versionguard.OptionsFromEnv()); errGuard != nil {
+		log.Errorf("refusing to start: %v", errGuard)
+		os.Exit(1)
+	}
+	// Print the switches actually in effect. On Windows a CPA_ANTIDETECT_*
+	// variable set in a scope the service never sees looks exactly like a
+	// variable that was never set, and the only other way to tell the
+	// difference is to run traffic and read the profile counters.
+	log.Infof("antidetect: options %s", executor.AntidetectOptionsSummary())
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)

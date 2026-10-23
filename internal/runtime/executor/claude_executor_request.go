@@ -806,7 +806,7 @@ func classifyClaudeUpstreamError(statusCode int, headers http.Header, body []byt
 func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) error {
 	var retryAfter *time.Duration
 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
-		retryAfter = helps.ParseClaudeRateLimitReset(headers, time.Now())
+		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
 	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
 	if statusCode == http.StatusTooManyRequests {
@@ -1132,24 +1132,123 @@ func claudeCredentialUsesOAuth(auth *cliproxyauth.Auth, apiKey string) bool {
 	return !hasAPIKeyAttr
 }
 
-func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode bool) {
+// claudeVersionGatedHeaders lists caller headers that only exist in client
+// versions newer than the identity this fork presents. Keep this list tied to
+// the version ledger in internal/antidetect/versionguard.
+var claudeVersionGatedHeaders = map[string]bool{
+	"x-claude-code-wiggly-dove": true,
+}
+
+// gatewayDeclarationHeaders are stripped by meaning, not by name list.
+//
+// The allowlist above decides what may travel; this decides what may never
+// travel, and it has to be independent of the allowlist. A future client can
+// name a header x-claude-code-gateway-something and the x-claude-code- prefix
+// would wave it through, which is the same shape as the wiggly-dove mistake.
+// Any caller header that names a gateway is a self-declaration of the relay the
+// request is passing through.
+func isGatewayDeclarationHeader(lowerName string) bool {
+	return strings.Contains(lowerName, "gateway")
+}
+
+// claudeForwardedCallerHeaders is an allowlist built from the headers a real
+// 2.1.280 client actually sends, captured on the wire.
+//
+// The previous rule was prefix-based ("anything under x-claude-code- travels"),
+// which is how x-claude-code-wiggly-dove got through: a header that ships a git
+// remote URL and a request checksum, named to look like every other member of
+// that family. A prefix answers "does this name look familiar", not "did the
+// client we claim to be ever send this", and the second question is the one that
+// matters. Anything not in this list is dropped by default, so a future client
+// adds a header only after this fork has captured and reviewed it.
+var claudeForwardedCallerHeaders = map[string]bool{
+	"accept":                                    true,
+	"accept-encoding":                           true,
+	"user-agent":                                true,
+	"x-app":                                     true,
+	"x-client-request-id":                       true,
+	"x-claude-code-session-id":                  true,
+	"x-claude-code-request-class":               true,
+	"x-stainless-arch":                          true,
+	"x-stainless-lang":                          true,
+	"x-stainless-os":                            true,
+	"x-stainless-package-version":               true,
+	"x-stainless-retry-count":                   true,
+	"x-stainless-runtime":                       true,
+	"x-stainless-runtime-version":               true,
+	"x-stainless-timeout":                       true,
+	"anthropic-beta":                            true,
+	"anthropic-dangerous-direct-browser-access": true,
+	"anthropic-version":                         true,
+	// Deliberate extras: used by the proxy itself for caller-owned apps and the
+	// additional-protection switch. Not observed on the sdk-cli capture.
+	"x-client-app":                      true,
+	"x-anthropic-additional-protection": true,
+}
+
+// claudeForwardedCallerPrefixes covers namespaces owned by the SDK rather than by
+// the client: the Stainless transport sets x-stainless-*, and anthropic-* is the
+// API's own parameter namespace. Neither is a channel a client uses to describe
+// itself, which is what the explicit list guards.
+func claudeForwardedCallerPrefixes(lowerName string) bool {
+	return strings.HasPrefix(lowerName, "x-stainless-") || strings.HasPrefix(lowerName, "anthropic-")
+}
+
+func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode, uncloak bool) {
 	if dst == nil || src == nil {
 		return
 	}
 	for name, values := range src {
 		lowerName := strings.ToLower(strings.TrimSpace(name))
-		if lowerName != "accept" && lowerName != "accept-encoding" && lowerName != "user-agent" &&
-			lowerName != "x-app" && lowerName != "x-client-request-id" &&
-			!strings.HasPrefix(lowerName, "anthropic-") &&
-			!strings.HasPrefix(lowerName, "x-stainless-") &&
-			!strings.HasPrefix(lowerName, "x-claude-code-") &&
-			!strings.HasPrefix(lowerName, "x-claude-remote-") &&
-			lowerName != "x-client-app" &&
-			lowerName != "x-anthropic-additional-protection" {
+		// Uncloaked requests must not carry any trace of the identity we present,
+		// so the strip runs before the allowlist rather than after it.
+		if uncloak {
+			if lowerName == "x-app" ||
+				lowerName == "x-client-request-id" ||
+				lowerName == "x-client-app" ||
+				lowerName == "x-anthropic-additional-protection" ||
+				lowerName == "anthropic-dangerous-direct-browser-access" ||
+				strings.HasPrefix(lowerName, "x-stainless-") ||
+				strings.HasPrefix(lowerName, "x-claude-code-") ||
+				strings.HasPrefix(lowerName, "x-claude-remote-") {
+				continue
+			}
+			if lowerName == "user-agent" && len(values) > 0 && helps.IsClaudeCodeUserAgent(values[0]) {
+				continue
+			}
+		}
+		if !claudeForwardedCallerHeaders[lowerName] && !claudeForwardedCallerPrefixes(lowerName) {
 			continue
 		}
-		if !confirmedClaudeCode && (strings.HasPrefix(lowerName, "x-claude-code-") || strings.HasPrefix(lowerName, "x-claude-remote-")) {
+		if isGatewayDeclarationHeader(lowerName) {
+			recordGatewayDeclaration("header:" + lowerName)
 			continue
+		}
+		// Claude-specific identity headers are only trusted from a caller the
+		// detector already recognised as Claude Code.
+		if !confirmedClaudeCode && strings.HasPrefix(lowerName, "x-claude-") {
+			continue
+		}
+		// Headers introduced by a newer client than the identity we present are
+		// not forwarded: a 2.1.280 request cannot carry a header that version
+		// never sent.
+		if claudeVersionGatedHeaders[lowerName] {
+			continue
+		}
+		if uncloak {
+			if lowerName == "x-app" ||
+				lowerName == "x-client-request-id" ||
+				lowerName == "x-client-app" ||
+				lowerName == "x-anthropic-additional-protection" ||
+				lowerName == "anthropic-dangerous-direct-browser-access" ||
+				strings.HasPrefix(lowerName, "x-stainless-") ||
+				strings.HasPrefix(lowerName, "x-claude-code-") ||
+				strings.HasPrefix(lowerName, "x-claude-remote-") {
+				continue
+			}
+			if lowerName == "user-agent" && len(values) > 0 && helps.IsClaudeCodeUserAgent(values[0]) {
+				continue
+			}
 		}
 		dst.Del(name)
 		for _, value := range values {
@@ -1209,6 +1308,11 @@ func applyClaudeHeadersWithNativeProfile(
 	useAPIKey := !credentialUsesBearer
 	fp := resolveClaudeFingerprintPolicy(cfg, auth, apiKey)
 	wirePolicy, _ := resolveClaudeWirePolicy(cfg, auth, apiKey, confirmedClaudeCode)
+	if wirePolicy.Uncloak {
+		confirmedClaudeCode = false
+		helperProfile = false
+		sessionIDs = nil
+	}
 	applyCLIFingerprint := fp.ProfileClaudeCodeCLI || wirePolicy.Cloak
 	preserveCallerFingerprint := !applyCLIFingerprint && !confirmedClaudeCode
 	useOAuthBetas := fp.UseOAuthBetas
@@ -1234,16 +1338,16 @@ func applyClaudeHeadersWithNativeProfile(
 	}
 	stabilizeDeviceProfile := helps.ClaudeDeviceProfileStabilizationEnabled(cfg)
 	var deviceProfile helps.ClaudeDeviceProfile
-	if stabilizeDeviceProfile && confirmedClaudeCode {
-		var errDeviceProfile error
-		deviceProfile, errDeviceProfile = helps.ResolveClaudeDeviceProfileRequired(r.Context(), auth, apiKey, incomingHeaders, cfg)
-		if errDeviceProfile != nil {
-			return errDeviceProfile
-		}
-	}
 
 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
+	if !confirmedClaudeCode && !wirePolicy.Cloak && wirePolicy.ExplicitNever && !wirePolicy.Uncloak {
+		det := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
+		if det.ConfirmedShape {
+			confirmedClaudeCode = true
+			helperProfile = helperProfile || (!det.BetasPresent && !countTokens)
+		}
+	}
 	requestedMap := claudeRequestedBetas(incomingBetas, extraBetas)
 	advisorNeeded := requestedMap[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body)
 
@@ -1262,17 +1366,19 @@ func applyClaudeHeadersWithNativeProfile(
 		if advisorNeeded {
 			baseBetas = withClaudeAdvisorToolBeta(baseBetas)
 		}
-		// Measured Haiku helper requests already carry the exact credential
-		// beta profile and intentionally omit extended-cache-ttl.
+		// Measured Haiku helper requests already carry their own cache-ttl beta
+		// choice (omitting extended-cache-ttl on 2.1.220/2.1.280 probes/title
+		// helpers), while helpers arriving via ANTHROPIC_BASE_URL still need
+		// oauth-2025-04-20 when CPA authenticates upstream with OAuth.
 		// Native Claude Code subagents and probes also omit extended-cache-ttl.
-		if useOAuthBetas && !helperProfile {
+		if useOAuthBetas {
 			if countTokens {
 				baseBetas = withClaudeCountTokensOAuthBeta(baseBetas)
 			} else {
 				isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, body)
 				isProbe := helps.IsClaudeProbeOrHelperRequest(body)
 				subagent1h := isSubagent && helps.ClaudeSubagentRequests1h(incomingHeaders, body)
-				includeExtendedCacheTTL := (!isSubagent || subagent1h) && !isProbe
+				includeExtendedCacheTTL := !helperProfile && (!isSubagent || subagent1h) && !isProbe
 				baseBetas = withClaudeOAuthCredentialBetas(baseBetas, includeExtendedCacheTTL)
 			}
 		}
@@ -1344,6 +1450,21 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 	}
 	applyBetaHeader := func() {
+		if wirePolicy.Uncloak {
+			baseBetas = withoutClaudeBeta(baseBetas, claudeCodeBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeOAuthBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeRedactThinkingBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeAFKModeBeta)
+			if !gjson.GetBytes(body, "diagnostics").Exists() {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeCacheDiagnosisBeta)
+			}
+			if !gjson.GetBytes(body, "fallback_credit_token").Exists() {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeFallbackCreditBeta)
+			}
+			if !helps.ClaudePayloadHas1hTTL(body) {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
+			}
+		}
 		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
 		if !claudeRequestSupportsEffort(body, nil) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
@@ -1400,7 +1521,7 @@ func applyClaudeHeadersWithNativeProfile(
 			defaultAccept = "text/event-stream"
 			defaultAcceptEncoding = "identity"
 		}
-		copyClaudeCallerFingerprintHeaders(r.Header, incomingHeaders, confirmedClaudeCode)
+		copyClaudeCallerFingerprintHeaders(r.Header, incomingHeaders, confirmedClaudeCode, wirePolicy.Uncloak)
 		if hd.ClientRequestID == config.ClaudeClientRequestIDOff {
 			r.Header.Del("X-Client-Request-Id")
 		}
@@ -1411,7 +1532,11 @@ func applyClaudeHeadersWithNativeProfile(
 		// sent none must not fall through to Go's transport default
 		// ("Go-http-client/1.1"), which upstreams read as a bot signature. Identify
 		// as CPA instead: honest about the hop, and not a fabricated client.
-		misc.EnsureHeader(r.Header, incomingHeaders, "User-Agent", "CLIProxyAPI/"+buildinfo.Version)
+		uaSourceHeaders := incomingHeaders
+		if wirePolicy.Uncloak && helps.IsClaudeCodeUserAgent(helps.HeaderValueCaseInsensitive(incomingHeaders, "User-Agent")) {
+			uaSourceHeaders = nil
+		}
+		misc.EnsureHeader(r.Header, uaSourceHeaders, "User-Agent", "CLIProxyAPI/"+buildinfo.Version)
 		applyBetaHeader()
 		sessionID := ""
 		for _, candidate := range sessionIDs {
@@ -1571,10 +1696,22 @@ func applyClaudeHeadersWithNativeProfile(
 	}
 	applyTransportNegotiation()
 	// Confirmed Claude Code requests may contribute their real software profile.
-	// Unconfirmed clients always receive the CLI baseline instead of being
-	// allowed to populate or reuse another client's software profile.
-	if stabilizeDeviceProfile {
+	// Two independent reasons to hand the caller's own device headers back:
+	// an explicit cloak mode of "never" means the operator asked for no disguise
+	// at all, and an unrecognized-but-plausible client already carries a
+	// consistent fingerprint that replacing would only fabricate over.
+	callerState := helps.DetectClientState(incomingHeaders, nil, false, confirmedClaudeCode, cfg)
+	if wirePolicy.ExplicitNever && confirmedClaudeCode {
+		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, true, true)
+	} else if callerState == helps.ClaudeClientUnknown {
+		helps.ApplyClaudeCallerDeviceHeaders(r, incomingHeaders, cfg)
+	} else if stabilizeDeviceProfile {
 		if confirmedClaudeCode {
+			var errDeviceProfile error
+			deviceProfile, errDeviceProfile = helps.ResolveClaudeDeviceProfileRequired(r.Context(), auth, apiKey, incomingHeaders, cfg)
+			if errDeviceProfile != nil {
+				return errDeviceProfile
+			}
 			helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile)
 		} else {
 			helps.ApplyClaudeDefaultDeviceProfileHeaders(r, cfg)

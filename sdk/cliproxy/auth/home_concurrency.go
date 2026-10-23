@@ -309,6 +309,15 @@ func SafeResponseHeaders(err error) http.Header {
 	if errors.As(err, &unavailable) && unavailable != nil {
 		return unavailable.Headers()
 	}
+	// Generic fallback: an error that carries a retry delay should surface it.
+	// Without this, a delay can be computed by the executor and then discarded
+	// before it reaches the client, which turns a paced 429 back into a bare one.
+	var withRetryAfter interface{ RetryAfter() *time.Duration }
+	if errors.As(err, &withRetryAfter) && withRetryAfter != nil {
+		if retryAfter := withRetryAfter.RetryAfter(); retryAfter != nil {
+			return safeRetryAfterHeader(*retryAfter)
+		}
+	}
 	return nil
 }
 

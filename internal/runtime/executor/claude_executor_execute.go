@@ -64,8 +64,18 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	// Refuse policy-violating content before any credential is selected: a
+	// safeguards action ends the account, and spending upstream quota on a
+	// request that will be refused makes that outcome more likely, not less.
+	if errContent := gateClaudeContent(auth, originalPayload); errContent != nil {
+		return resp, errContent
+	}
+	recordClaudeFingerprint(auth, originalPayload)
+	recordClaudeConsistency(auth, e.cfg, originalPayload)
+	observeClaudeRequest(ctx, auth)
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
-	confirmedClaudeCode := claudeCodeDetection.Confirmed
+	wirePolicy, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, claudeCodeDetection.Confirmed)
+	confirmedClaudeCode := isEffectiveConfirmedClaudeCode(claudeCodeDetection, wirePolicy)
 	claudeSessionID := ""
 	if fp.ProfileClaudeCodeCLI {
 		claudeSessionID = helps.ClaudeAgentSessionUUIDForRequest(incomingHeaders, originalPayload, req.Payload, confirmedClaudeCode, opts.Metadata, req.Metadata)
@@ -96,7 +106,6 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
-	_, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
 	isProbeOrHelper := helps.IsClaudeProbeOrHelperRequest(body)
 	explicitCacheMode := isExplicitPromptCacheMode(originalPayload, req.Payload, body)
 	if explicitCacheMode {
@@ -243,6 +252,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	bodyForUpstream = applyClaudePreservedThinkingBinding(bodyForUpstream)
 	// User rules match the fully prepared business body and are applied only once.
 	var touchedPayloadPaths map[string]bool
+	// Remove the caller's gateway self-declaration before anything else looks at
+	// the body: the billing line lives in system text, not in a header.
+	bodyForUpstream = stripClaudeGatewayMarker(bodyForUpstream)
 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
 		e.cfg, baseModel, to.String(), from.String(), "", bodyForUpstream, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
 		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers,
@@ -253,6 +265,14 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
 	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
+	// The attribution suffix is verified upstream and must describe the body that
+	// is actually sent, so it is refreshed after every mutation below.
+	// Only a billing line this fork wrote is refreshed: a confirmed client's
+	// header already describes its own text, and recomputing it there would
+	// corrupt an authoritative value.
+	if cloaked {
+		bodyForUpstream = refreshClaudeBillingFingerprint(bodyForUpstream)
+	}
 	if cchSigning {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {
@@ -299,7 +319,32 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
+	// Verify the credential's exit binding before anything leaves: sharing an
+	// exit between credentials is what links them upstream.
+	if errWindow := checkClaudeWindow(auth); errWindow != nil {
+		return resp, errWindow
+	}
+	if errEgress := checkClaudeEgress(auth); errEgress != nil {
+		return resp, errEgress
+	}
+	// Stop before the throttle: a credential that upstream is already rejecting
+	// must not spend its pacing budget producing more rejected requests.
+	if errBreaker := awaitClaudeBreaker(auth); errBreaker != nil {
+		return resp, errBreaker
+	}
+	// Pace this credential before the request leaves. Inter-request timing is
+	// one of the few signals a proxy cannot disguise with a better payload.
+	if errThrottle := awaitClaudeRateSlot(ctx, auth); errThrottle != nil {
+		return resp, errThrottle
+	}
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
+	if httpResp != nil {
+		if httpResp.StatusCode == http.StatusTooManyRequests {
+			recordClaudeRateLimit(auth)
+			recordClaudeBreakerTraffic(auth)
+		}
+		observeClaudeWindow(auth, httpResp.Header)
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, wrapClaudeFastRequestError(fastRequest, 0, err)

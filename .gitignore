@@ -67,3 +67,12 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+
+# fingerprint captures (may contain prompts)
+capture-out/
+*.pcap
+/changelog-watch
+
+# local build artifacts
+/verify-cch
+/hello-probe

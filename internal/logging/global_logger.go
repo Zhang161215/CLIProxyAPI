@@ -59,6 +59,9 @@ var logFieldOrder = []string{
 	"credential", "auth_id", "auth_index", "connection", "proxy_scheme", "remote_transport",
 	"operation", "upstream_host", "reused", "was_idle", "idle_time",
 	"media_session_id", "call_id", "peer", "state", "reason",
+	// antidetect audit records: without these the gate decisions would be
+	// rendered as a bare message and the evidence would never reach the log.
+	"audit", "event", "decision", "client_state", "rule", "category", "detail", "summary",
 }
 
 var quotedLogFields = map[string]struct{}{
@@ -75,6 +78,15 @@ var quotedLogFields = map[string]struct{}{
 	"peer":             {},
 	"state":            {},
 	"reason":           {},
+	// antidetect audit values may contain spaces and punctuation.
+	"event":        {},
+	"decision":     {},
+	"client_state": {},
+	"rule":         {},
+	"category":     {},
+	"excerpt":      {},
+	"detail":       {},
+	"summary":      {},
 }
 
 var pluginPathFieldOrder = []string{"path", "active_path", "retired_path"}
