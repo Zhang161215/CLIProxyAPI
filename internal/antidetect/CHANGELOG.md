@@ -31,6 +31,42 @@
 
 ---
 
+## [0.5.13] — 2026-10-23 · 同步上游 Claude 修复 + 修一个并发崩溃
+
+### 同步（只拿 Claude 路径）
+
+上游十天 127 个提交，只挑了 5 个碰 Claude 的：
+
+| 提交 | 内容 |
+|---|---|
+| `538abf70` | 短 `Retry-After` 时收窄 Claude 分钟级冷却 |
+| `6f5f6abd` | cloak never / uncloak 时剥离 Claude Code 身份 |
+| `14efd1e8` | sdk-ts 视为原生 CC；cloak never 下保留调用方头 |
+| `b4bcd3cc` | 丢弃空 text 块，cache_control 注入时跳过 |
+| `b63e50cb` | cloak never 的头校验 |
+
+其余 122 个（Codex/Gemini/Vertex/OpenAI 路由、usage 统计）不跟进。
+
+三处冲突都在 `claude_executor_request.go`，都在入站头与设备画像管线：
+
+- 调用方头函数接受上游的 `uncloak` 参数，剥离逻辑放在**观测集白名单之前**
+- 设备头分流保留两条规则：显式 never 交还调用方自己的头；无法识别但合理的客户端保留它已有的头
+- `ApplyClaudeLegacyDeviceHeaders` 接受新的 `cfg` 与校验参数
+
+### 修复：并发读写 credentials metadata 会崩
+
+`isClaudeSetupToken` 直接读 `auth.Metadata[...]`，而 `StoreMetadataString` 在同一张表上**持锁写**。
+
+Go 的 map 并发读写不是「丢一次更新」，是 **fatal error: concurrent map read and map write**——一个凭证同时服务两个请求就可能触发。
+
+这个竞态来自上游，不是合并引入（合并前整包 `-race` 三次里也能复现一次）。
+
+修法：`internal/auth/claude` 新增 `ReadMetadataBool` / `ReadMetadataValue`，与写路径共用同一把锁；Claude 路径上 4 处裸读全部换掉。
+
+`-race` 连跑 5 次，0 竞态。
+
+---
+
 ## [0.5.12] — 2026-10-22 · 归属指纹随最终请求体刷新
 
 ### 背景

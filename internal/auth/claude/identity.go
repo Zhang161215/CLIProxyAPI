@@ -352,3 +352,38 @@ func ValidDeviceID(value string) bool {
 	decoded, errDecode := hex.DecodeString(value)
 	return errDecode == nil && len(decoded) == claudeDeviceIDByteSize
 }
+
+// ReadMetadataBool reads a boolean metadata entry under the metadata lock.
+//
+// The lock has to cover readers as well as writers: a credential serving two
+// requests at once has one goroutine storing the account UUID while another
+// inspects setup-token flags, and an unguarded read there is a concurrent map
+// access, which is a fatal runtime error rather than a lost update.
+func ReadMetadataBool(metadata *map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	claudeDevicePoolMu.Lock()
+	defer claudeDevicePoolMu.Unlock()
+
+	if *metadata == nil {
+		return false
+	}
+	value, _ := (*metadata)[key].(bool)
+	return value
+}
+
+// ReadMetadataValue reads an arbitrary metadata entry under the metadata lock.
+func ReadMetadataValue(metadata *map[string]any, key string) (any, bool) {
+	if metadata == nil {
+		return nil, false
+	}
+	claudeDevicePoolMu.Lock()
+	defer claudeDevicePoolMu.Unlock()
+
+	if *metadata == nil {
+		return nil, false
+	}
+	value, ok := (*metadata)[key]
+	return value, ok
+}

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"net/http"
 	"os"
 	"strings"
@@ -90,8 +91,8 @@ func declaredEgressID(auth *cliproxyauth.Auth) string {
 			return trimmed
 		}
 	}
-	if auth.Metadata != nil {
-		if value, ok := auth.Metadata[egress.BindingEnv].(string); ok {
+	if raw, ok := claudeauth.ReadMetadataValue(&auth.Metadata, egress.BindingEnv); ok {
+		if value, isString := raw.(string); isString {
 			return strings.TrimSpace(value)
 		}
 	}
