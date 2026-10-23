@@ -212,3 +212,24 @@ at 2026-10-22 01:35 UTC, with 7d utilization already at 0.86.
 Outcome to watch: if B outlives day 5, the concurrency cap is a usable lever for
 relays; if B also dies around day 3, sharing is not survivable and one account per
 user is the only option.
+
+---
+
+## Appendix B: cloaking A/B running since 2026-10-22
+
+Two accounts, same fork, same region, same downstream users, opposite cloaking
+setting. Both write logs from the start.
+
+| | cpa-7 | cpa-8 |
+|---|---|---|
+| Fork version | v0.5.11 | v0.5.11 |
+| `disable-claude-cloak-mode` | **true** (no identity synthesis) | **false** (default) |
+| Account | `while-3-babbles@icloud.com` | `slam_hires1v@icloud.com` |
+| Account created | 2026-10-21 | 2026-10-21 23:37 PDT |
+| First day seen | 208 requests before the switch | 1578 requests, 79 × 429 |
+| Utilization at baseline | 5h 0.88 / 7d 0.28 | 5h 0.31 / 7d 0.21 |
+
+Both previous cloaking-on accounts (`cpa-5`, `cpa-6`) were revoked on days 3 and 4
+with the same Safeguards message. If cpa-7 outlives cpa-8 here, cloaking is the
+difference; if both die on the same schedule, it is not, and the remaining
+candidates are account provenance or something no proxy can see.
