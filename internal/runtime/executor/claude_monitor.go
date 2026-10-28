@@ -104,16 +104,30 @@ func entrypointFromContext(ctx context.Context) string {
 	return strings.TrimSpace(rest)
 }
 
-func sessionIDFromContext(ctx context.Context) string {
-	headers := helps.IncomingHeadersFromContext(ctx)
-	if headers == nil {
+// sessionIDFromContext reports the session this request will actually present
+// upstream.
+//
+// Relay clients do not send X-Claude-Code-Session-Id, so reading only the
+// inbound header counted zero sessions for every credential and hid the number
+// that matters: how many distinct sessions one account appears to be serving.
+func sessionIDFromContext(ctx context.Context, apiKey string) string {
+	if headers := helps.IncomingHeadersFromContext(ctx); headers != nil {
+		if inbound := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); inbound != "" {
+			return inbound
+		}
+	}
+	if strings.TrimSpace(apiKey) == "" {
 		return ""
 	}
-	return strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id"))
+	sessionID, errSession := helps.CachedSessionIDRequired(ctx, apiKey)
+	if errSession != nil {
+		return ""
+	}
+	return sessionID
 }
 
 // observeClaudeRequest records one admitted request against its credential.
-func observeClaudeRequest(ctx context.Context, auth *cliproxyauth.Auth) {
+func observeClaudeRequest(ctx context.Context, auth *cliproxyauth.Auth, apiKey string) {
 	credentialID := authCredentialID(auth)
 	if credentialID == "" {
 		return
@@ -122,7 +136,7 @@ func observeClaudeRequest(ctx context.Context, auth *cliproxyauth.Auth) {
 		clientIPFromContext(ctx),
 		userAgentFromContext(ctx),
 		entrypointFromContext(ctx),
-		sessionIDFromContext(ctx),
+		sessionIDFromContext(ctx, apiKey),
 		true,
 	)
 }

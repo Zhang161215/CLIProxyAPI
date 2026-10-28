@@ -35,7 +35,10 @@ var currentClaudeIDKVClient = func() (claudeIDKVClient, bool, error) {
 }
 
 const (
-	sessionIDTTL                = time.Hour
+	// A real client keeps one session for the length of a conversation, not for
+	// an hour. Rotating hourly turns a single user into 24 sessions a day, and
+	// the upstream reads session churn as one account serving many clients.
+	sessionIDTTL                = 168 * time.Hour
 	sessionIDCacheCleanupPeriod = 15 * time.Minute
 )
 

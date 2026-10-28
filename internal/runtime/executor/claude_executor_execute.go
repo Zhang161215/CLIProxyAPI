@@ -79,7 +79,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	recordClaudeFingerprint(auth, originalPayload)
 	recordClaudeConsistency(auth, e.cfg, originalPayload)
-	observeClaudeRequest(ctx, auth)
+	observeClaudeRequest(ctx, auth, apiKey)
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
 	wirePolicy, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, claudeCodeDetection.Confirmed)
 	confirmedClaudeCode := isEffectiveConfirmedClaudeCode(claudeCodeDetection, wirePolicy)

@@ -21,8 +21,8 @@ func TestObserveClaudeRequestRecordsProfile(t *testing.T) {
 	ctx := helps.WithIncomingHeaders(context.Background(), headers)
 
 	auth := &cliproxyauth.Auth{ID: "cred-monitor"}
-	observeClaudeRequest(ctx, auth)
-	observeClaudeRequest(ctx, auth)
+	observeClaudeRequest(ctx, auth, "test-key")
+	observeClaudeRequest(ctx, auth, "test-key")
 
 	snapshots := registry.Snapshots()
 	if len(snapshots) != 1 {
